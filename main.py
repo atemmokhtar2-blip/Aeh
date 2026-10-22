@@ -386,7 +386,7 @@ async def messages(u,ctx):
     if step=="amount":
         raw=(m.text or "").strip()
         import re
-        if not re.fullmatch(r"\\d{1,9}(?:\\.\\d{1,2})?",raw) or float(raw)<=0:
+        if not re.fullmatch(r"\d{1,9}(?:\.\d{1,2})?",raw) or float(raw)<=0:
             return await m.reply_text("عدد الدولارات غير صحيح. أرسل رقمًا أكبر من صفر، ويمكنك استخدام منزلتين عشريتين فقط. مثال: 250 أو 250.50")
         ctx.user_data["draft"]["amount"]=raw
         d=ctx.user_data["draft"]
