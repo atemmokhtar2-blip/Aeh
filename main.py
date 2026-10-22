@@ -38,6 +38,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
         CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,added_by INTEGER,added_at TEXT);
         CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY,blocked_by INTEGER NOT NULL,blocked_at TEXT NOT NULL,reason TEXT DEFAULT '');
+        CREATE TABLE IF NOT EXISTS bot_users(user_id INTEGER PRIMARY KEY,username TEXT,full_name TEXT,first_seen TEXT NOT NULL,last_seen TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT,actor INTEGER,action TEXT,details TEXT,created_at TEXT);
         """)
         for i in range(1,11):
@@ -84,6 +85,8 @@ async def start(u,ctx):
         return await u.effective_message.reply_text("لحماية بياناتك، استخدم البوت في المحادثة الخاصة فقط.")
     if is_blocked(u.effective_user.id) and not is_admin(u.effective_user.id):
         return await u.message.reply_text("لا يمكنك استخدام البوت حاليًا. تواصل مع الإدارة.")
+    with db() as c:
+        c.execute("INSERT INTO bot_users(user_id,username,full_name,first_seen,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,last_seen=excluded.last_seen",(u.effective_user.id,u.effective_user.username,u.effective_user.full_name,now(),now()))
     ctx.user_data.clear()
     await u.message.reply_text("أهلًا بك. اختر البرنامج المطلوب، ثم أدخل رقم المحفظة والمبلغ وأرسل صورة إثبات التحويل.",reply_markup=home_kb(u.effective_user.id))
 async def admin_cmd(u,ctx):
@@ -244,8 +247,8 @@ async def callbacks(u,ctx):
     if d.startswith("a:users"):
         page=int(d.split(":")[2]) if d.count(":")>=2 else 0
         with db() as c:
-            rs=c.execute("SELECT r.user_id,MAX(r.username) username,MAX(r.full_name) full_name,COUNT(*) n,MAX(r.id) last_id FROM requests r GROUP BY r.user_id ORDER BY last_id DESC LIMIT 10 OFFSET ?",(page*10,)).fetchall()
-            total=c.execute("SELECT COUNT(DISTINCT user_id) FROM requests").fetchone()[0]
+            rs=c.execute("SELECT u.user_id,COALESCE(u.username,MAX(r.username)) username,COALESCE(u.full_name,MAX(r.full_name)) full_name,COUNT(r.id) n,u.last_seen last_id FROM bot_users u LEFT JOIN requests r ON r.user_id=u.user_id GROUP BY u.user_id ORDER BY u.last_seen DESC LIMIT 10 OFFSET ?",(page*10,)).fetchall()
+            total=c.execute("SELECT COUNT(*) FROM bot_users").fetchone()[0]
         kb=[[InlineKeyboardButton(f"{(r['username'] and '@'+r['username']) or (r['full_name'] or str(r['user_id']))} · {r['n']} طلب",callback_data=f"userdetail:{r['user_id']}")] for r in rs]
         nav=[]
         if page>0: nav.append(InlineKeyboardButton("السابق",callback_data=f"a:users:{page-1}"))
@@ -297,6 +300,9 @@ async def messages(u,ctx):
     if not m or not user: return
     if not u.effective_chat or u.effective_chat.type != "private":
         return await m.reply_text("لحماية رقم المحفظة وصورة التحويل، أرسل البيانات في الخاص فقط.")
+    if is_blocked(user.id) and not is_admin(user.id):
+        ctx.user_data.clear()
+        return await m.reply_text("لا يمكنك استخدام البوت حاليًا. تواصل مع الإدارة.")
     if step=="addadmin_id":
         if not owner(user.id): ctx.user_data.clear(); return
         raw=(m.text or "").strip()
