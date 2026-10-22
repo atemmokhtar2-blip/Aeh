@@ -41,6 +41,11 @@ class DatabaseTests(unittest.TestCase):
         main.init_db()
         self.assertTrue(main.is_admin(123456))
 
+    def test_csv_formula_payload_is_neutralized(self):
+        self.assertEqual(main.csv_safe("=1+1"), "'=1+1")
+        self.assertEqual(main.csv_safe("@SUM(A1:A2)"), "'@SUM(A1:A2)")
+        self.assertEqual(main.csv_safe("normal wallet"), "normal wallet")
+
     def test_activity_log_persists(self):
         main.audit(123456, "test_action", "unit test")
         with main.db() as conn:
