@@ -88,7 +88,7 @@ async def start(u,ctx):
     with db() as c:
         c.execute("INSERT INTO bot_users(user_id,username,full_name,first_seen,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,last_seen=excluded.last_seen",(u.effective_user.id,u.effective_user.username,u.effective_user.full_name,now(),now()))
     ctx.user_data.clear()
-    await u.message.reply_text("أهلًا بك. اختر البرنامج المطلوب، ثم أدخل رقم المحفظة والمبلغ وأرسل صورة إثبات التحويل.",reply_markup=home_kb(u.effective_user.id))
+    await u.message.reply_text(f"أهلًا بك {u.effective_user.first_name or ''}، اختر البرنامج المطلوب.",reply_markup=home_kb(u.effective_user.id))
 async def admin_cmd(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("لوحة الإدارة متاحة في الخاص فقط.")
