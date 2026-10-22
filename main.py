@@ -88,7 +88,8 @@ async def start(u,ctx):
     with db() as c:
         c.execute("INSERT INTO bot_users(user_id,username,full_name,first_seen,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,last_seen=excluded.last_seen",(u.effective_user.id,u.effective_user.username,u.effective_user.full_name,now(),now()))
     ctx.user_data.clear()
-    await u.message.reply_text(f"أهلًا بك {u.effective_user.first_name or ''}، اختر البرنامج المطلوب.",reply_markup=home_kb(u.effective_user.id))
+    welcome = (f"هلا بيك {u.effective_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "1. التارجت الخاص بك:\n123455789\n\n" + "2. سعر الصرف:\nالدولار = 50 جنيهًا مصريًا.\n\n" + "3. البيانات المطلوبة ⚡\n" + "• اسكرين شوت للتارجت الذي أرسلته.\n" + "• رقم الكاش الخاص بك.\n" + "• الـ ID الخاص بك.\n" + "• عدد الدولارات التي أرسلتها.\n\n" + "أرسل البيانات المطلوبة بدقة، ثم اختر البرنامج المطلوب من الأزرار بالأسفل.")
+    await u.message.reply_text(welcome,reply_markup=home_kb(u.effective_user.id))
 async def admin_cmd(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("لوحة الإدارة متاحة في الخاص فقط.")
