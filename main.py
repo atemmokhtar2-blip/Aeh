@@ -17,6 +17,12 @@ LABELS = {"pending": "قيد المراجعة", "approved": "مقبول", "rejec
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+def csv_safe(value):
+    # Prevent spreadsheet formula execution when exported fields are opened in Excel/Sheets.
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\\t", "\\r")):
+        return "'" + value
+    return value
+
 def db():
     p = Path(DB_PATH)
     if str(p.parent) not in ("", "."): p.parent.mkdir(parents=True, exist_ok=True)
@@ -68,14 +74,22 @@ async def edit(q,text,kb=None):
     except Exception: await q.message.reply_text(text,reply_markup=kb)
 
 async def start(u,ctx):
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await u.effective_message.reply_text("لحماية بياناتك، استخدم البوت في المحادثة الخاصة فقط.")
     ctx.user_data.clear()
     await u.message.reply_text("أهلًا بك. اختر البرنامج المطلوب، ثم أدخل رقم المحفظة والمبلغ وأرسل صورة إثبات التحويل.",reply_markup=home_kb())
 async def admin_cmd(u,ctx):
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await u.effective_message.reply_text("لوحة الإدارة متاحة في الخاص فقط.")
     if not is_admin(u.effective_user.id): return await u.message.reply_text("هذا القسم للإدارة فقط.")
     await u.message.reply_text("لوحة تحكم الإدارة",reply_markup=admin_kb())
 async def cancel(u,ctx):
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await u.effective_message.reply_text("استخدم البوت في الخاص فقط لحماية البيانات.")
     ctx.user_data.clear(); await u.message.reply_text("تم الإلغاء. أرسل /start للبدء من جديد.")
 async def setprogram(u,ctx):
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await u.effective_message.reply_text("استخدم البوت في الخاص فقط لحماية البيانات.")
     uid=u.effective_user.id
     if not is_admin(uid): return await u.message.reply_text("غير مصرح.")
     parts=[x.strip() for x in u.message.text.partition(" ")[2].split("|",2)]
@@ -84,6 +98,8 @@ async def setprogram(u,ctx):
     with db() as c: c.execute("UPDATE programs SET name=?,code=? WHERE id=?",(parts[1][:80],parts[2][:200],int(parts[0])))
     audit(uid,"program_updated",parts[0]+" "+parts[1]); await u.message.reply_text("تم تحديث البرنامج.")
 async def addadmin(u,ctx):
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await u.effective_message.reply_text("استخدم البوت في الخاص فقط لحماية البيانات.")
     uid=u.effective_user.id
     if not owner(uid): return await u.message.reply_text("مالك البوت فقط يمكنه إدارة المشرفين.")
     if not ctx.args or not ctx.args[0].isdigit(): return await u.message.reply_text("الاستخدام: /addadmin TELEGRAM_ID")
@@ -91,6 +107,8 @@ async def addadmin(u,ctx):
     with db() as c: c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(target,uid,now()))
     audit(uid,"admin_added",str(target)); await u.message.reply_text("تمت إضافة المشرف.")
 async def deladmin(u,ctx):
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await u.effective_message.reply_text("استخدم البوت في الخاص فقط لحماية البيانات.")
     uid=u.effective_user.id
     if not owner(uid): return await u.message.reply_text("مالك البوت فقط يمكنه إدارة المشرفين.")
     if not ctx.args or not ctx.args[0].isdigit(): return await u.message.reply_text("الاستخدام: /deladmin TELEGRAM_ID")
@@ -100,6 +118,8 @@ async def deladmin(u,ctx):
     with db() as c: c.execute("DELETE FROM admins WHERE user_id=?",(target,))
     audit(uid,"admin_removed",str(target)); await u.message.reply_text("تم حذف المشرف إن كان موجودًا.")
 async def usercmd(u,ctx):
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await u.effective_message.reply_text("استخدم البوت في الخاص فقط لحماية البيانات.")
     if not is_admin(u.effective_user.id): return await u.message.reply_text("غير مصرح.")
     if not ctx.args or not ctx.args[0].isdigit(): return await u.message.reply_text("الاستخدام: /user TELEGRAM_ID")
     with db() as c: rs=c.execute("SELECT id,program_name,amount,status FROM requests WHERE user_id=? ORDER BY id DESC LIMIT 20",(int(ctx.args[0]),)).fetchall()
@@ -141,6 +161,8 @@ async def decide(q,ctx,rid,status,reason=""):
     await edit(q,f"تم {'قبول' if status=='approved' else 'رفض'} الطلب #{rid} وإبلاغ المستخدم.",admin_kb())
 async def callbacks(u,ctx):
     q=u.callback_query; await q.answer(); uid=q.from_user.id; d=q.data
+    if not q.message or q.message.chat.type != "private":
+        return await q.answer("استخدم البوت في الخاص فقط لحماية البيانات.", show_alert=True)
     if d=="noop": return
     if d.startswith("p:"):
         pid=int(d.split(":")[1])
@@ -195,7 +217,7 @@ async def callbacks(u,ctx):
     if d=="a:export":
         with db() as c: rs=c.execute("SELECT * FROM requests ORDER BY id DESC").fetchall()
         out=io.StringIO(); w=csv.writer(out); w.writerow(["id","user_id","username","program","wallet","amount_claimed","status","created_at","reviewed_at","reviewer_id","reason"])
-        for r in rs: w.writerow([r["id"],r["user_id"],r["username"],r["program_name"],r["wallet"],r["amount"],r["status"],r["created_at"],r["reviewed_at"],r["reviewer_id"],r["reason"]])
+        for r in rs: w.writerow([csv_safe(v) for v in [r["id"],r["user_id"],r["username"],r["program_name"],r["wallet"],r["amount"],r["status"],r["created_at"],r["reviewed_at"],r["reviewer_id"],r["reason"]]])
         b=io.BytesIO(out.getvalue().encode("utf-8-sig")); b.name="aeh_requests.csv"
         await ctx.bot.send_document(q.message.chat_id,InputFile(b),caption="تقرير الطلبات. المبالغ مدخلة من المستخدمين وليست مبالغ مؤكدة.")
         return await edit(q,"تم تجهيز التقرير.",admin_kb())
@@ -207,6 +229,8 @@ async def callbacks_proxy_programs(q):
 async def messages(u,ctx):
     m=u.effective_message; user=u.effective_user; step=ctx.user_data.get("step")
     if not m or not user: return
+    if not u.effective_chat or u.effective_chat.type != "private":
+        return await m.reply_text("لحماية رقم المحفظة وصورة التحويل، أرسل البيانات في الخاص فقط.")
     if step=="reject":
         if not is_admin(user.id): return
         rid=ctx.user_data.get("rid"); ctx.user_data.clear()
