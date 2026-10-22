@@ -58,10 +58,11 @@ def audit(uid, action, details=""):
     with db() as c: c.execute("INSERT INTO activity(actor,action,details,created_at) VALUES(?,?,?,?)",(uid,action,details[:500],now()))
 def get_programs(active=False):
     with db() as c: return c.execute("SELECT * FROM programs"+(" WHERE enabled=1" if active else "")+" ORDER BY id").fetchall()
-def home_kb():
+def home_kb(uid=None):
     ps=get_programs(True); rows=[]
     for i in range(0,len(ps),2): rows.append([InlineKeyboardButton(p["name"],callback_data=f"p:{p['id']}") for p in ps[i:i+2]])
     if not rows: rows=[[InlineKeyboardButton("لا توجد برامج متاحة",callback_data="noop")]]
+    if uid is not None and is_admin(uid): rows.append([InlineKeyboardButton("لوحة الإدارة",callback_data="a:home")])
     return InlineKeyboardMarkup(rows)
 def admin_kb():
     return InlineKeyboardMarkup([
@@ -77,7 +78,7 @@ async def start(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("لحماية بياناتك، استخدم البوت في المحادثة الخاصة فقط.")
     ctx.user_data.clear()
-    await u.message.reply_text("أهلًا بك. اختر البرنامج المطلوب، ثم أدخل رقم المحفظة والمبلغ وأرسل صورة إثبات التحويل.",reply_markup=home_kb())
+    await u.message.reply_text("أهلًا بك. اختر البرنامج المطلوب، ثم أدخل رقم المحفظة والمبلغ وأرسل صورة إثبات التحويل.",reply_markup=home_kb(u.effective_user.id))
 async def admin_cmd(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("لوحة الإدارة متاحة في الخاص فقط.")
@@ -275,12 +276,17 @@ async def messages(u,ctx):
         return
     if m.text and m.text.startswith("/"): return
     await m.reply_text("أرسل /start لعرض البرامج.")
+async def clear_command_menu(app):
+    # Clear previously configured commands from the default Telegram bot menu.
+    await app.bot.delete_my_commands()
+    log.info("Cleared Telegram command menu entries for the default scope.")
+
 async def error_handler(update,ctx): log.exception("Unhandled bot error",exc_info=ctx.error)
 def main():
     if not TOKEN: raise RuntimeError("Set BOT_TOKEN in environment variables.")
     if not INITIAL_ADMINS: raise RuntimeError("Set ADMIN_IDS to at least one numeric Telegram ID.")
     init_db()
-    app=Application.builder().token(TOKEN).build()
+    app=Application.builder().token(TOKEN).post_init(clear_command_menu).build()
     if OWNER is None or OWNER not in INITIAL_ADMINS:
         raise RuntimeError("Set OWNER_ID to the intended owner Telegram ID and include that ID in ADMIN_IDS.")
     for command,fn in [("start",start),("admin",admin_cmd),("cancel",cancel),("setprogram",setprogram),("addadmin",addadmin),("deladmin",deladmin),("user",usercmd)]:
