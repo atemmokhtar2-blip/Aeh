@@ -34,13 +34,17 @@ def init_db():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1);
-        CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,amount TEXT,photo TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT);
+        CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,customer_id TEXT,amount TEXT,photo TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT);
         CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
         CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,added_by INTEGER,added_at TEXT);
         CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY,blocked_by INTEGER NOT NULL,blocked_at TEXT NOT NULL,reason TEXT DEFAULT '');
         CREATE TABLE IF NOT EXISTS bot_users(user_id INTEGER PRIMARY KEY,username TEXT,full_name TEXT,first_seen TEXT NOT NULL,last_seen TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT,actor INTEGER,action TEXT,details TEXT,created_at TEXT);
         """)
+        # Migrate existing databases without losing previously saved requests.
+        request_columns = {row["name"] for row in c.execute("PRAGMA table_info(requests)")}
+        if "customer_id" not in request_columns:
+            c.execute("ALTER TABLE requests ADD COLUMN customer_id TEXT")
         for i in range(1,11):
             c.execute("INSERT OR IGNORE INTO programs VALUES(?,?,?,1)",(i,f"برنامج {i:02d}","لم يحدد الكود بعد"))
         # Seed configured admins only on first database initialization. Do not
@@ -150,7 +154,7 @@ async def list_requests(q,status,page=0):
 async def request_detail(q,rid):
     with db() as c: r=c.execute("SELECT * FROM requests WHERE id=?",(rid,)).fetchone()
     if not r: return await edit(q,"الطلب غير موجود.",admin_kb())
-    text=f"طلب #{rid}\nالحالة: {LABELS[r['status']]}\nالمستخدم: {r['full_name']} (@{r['username'] or 'بدون اسم'})\nTelegram ID: {r['user_id']}\nالبرنامج: {r['program_name']}\nالكود: {r['program_code']}\nالمحفظة: {r['wallet']}\nالمبلغ المُدخل: {r['amount']}\nالتاريخ: {r['created_at']}\nسبب الرفض: {r['reason'] or '—'}\n\nتحقق من وصول التحويل بشكل مستقل."
+    text=f"طلب #{rid}\nالحالة: {LABELS[r['status']]}\nالمستخدم: {r['full_name']} (@{r['username'] or 'بدون اسم'})\nTelegram ID: {r['user_id']}\nالبرنامج: {r['program_name']}\nالكود: {r['program_code']}\nرقم الكاش: {r['wallet']}\nID العميل: {r['customer_id'] or '—'}\nعدد الدولارات: {r['amount']}\nالتاريخ: {r['created_at']}\nسبب الرفض: {r['reason'] or '—'}\n\nتحقق من وصول التحويل بشكل مستقل."
     buttons=[]
     if r["status"]=="pending": buttons.append([InlineKeyboardButton("قبول",callback_data=f"ok:{rid}"),InlineKeyboardButton("رفض",callback_data=f"no:{rid}")])
     else: buttons.append([InlineKeyboardButton("إعادة للمراجعة",callback_data=f"reopen:{rid}")])
@@ -188,9 +192,9 @@ async def callbacks(u,ctx):
     if d=="continue_request":
         if ctx.user_data.get("step")!="confirm_program" or not ctx.user_data.get("draft"):
             return await edit(q,"اختار البرنامج من القائمة أولًا.",home_kb(uid))
-        ctx.user_data["step"]="wallet"
+        ctx.user_data["step"]="proof"
         checklist = ("• البيانات المطلوبة ⚡\n" + "• اسكرين شوت للتارجت الذي أرسلته.\n" + "• رقم الكاش الخاص بك.\n" + "• الـ ID الخاص بك.\n" + "• عدد الدولارات التي أرسلتها.")
-        return await edit(q,checklist + "\n\nابدأ بإرسال رقم الكاش الخاص بك.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء العملية",callback_data="ucancel")]]))
+        return await edit(q,checklist + "\n\nالخطوة 1 من 4 — أرسل اسكرين شوت التارجت كصورة داخل تيليجرام.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء العملية",callback_data="ucancel")]]))
     if d=="ucancel": ctx.user_data.clear(); return await edit(q,"أهلًا بك، اختر البرنامج المطلوب.",home_kb(uid))
     if not is_admin(uid): return await q.answer("غير مصرح.",show_alert=True)
     if d=="a:home": return await edit(q,"لوحة تحكم الإدارة",admin_kb())
@@ -355,38 +359,48 @@ async def messages(u,ctx):
         ctx.user_data.clear()
         with db() as c: c.execute("UPDATE programs SET name=?,code=? WHERE id=?",(name[:80],code[:200],pid))
         audit(user.id,"program_updated",str(pid)); return await m.reply_text("تم تحديث اسم البرنامج والكود بنجاح.",reply_markup=admin_kb())
+    if step=="proof":
+        if not m.photo:
+            return await m.reply_text("الخطوة 1 من 4 — مطلوب اسكرين شوت التارجت. أرسل الصورة كصورة داخل تيليجرام، وليس كملف أو فيديو أو ملصق.")
+        if m.photo[-1].file_size and m.photo[-1].file_size>10*1024*1024:
+            return await m.reply_text("حجم الصورة أكبر من الحد المسموح (10 ميجابايت). أرسل صورة أصغر وواضحة.")
+        ctx.user_data["draft"]["photo"]=m.photo[-1].file_id
+        ctx.user_data["step"]="wallet"
+        return await m.reply_text("الخطوة 2 من 4 — رقم الكاش\nأرسل رقم المحفظة المصرية المكوّن من 11 رقمًا ويبدأ بـ 01. لا ترسل أي كلمة مرور أو رمز تحقق.")
     if step=="wallet":
         raw=(m.text or "").strip()
         if not raw:
-            return await m.reply_text("الخطوة 1 من 4 — رقم المحفظة\nأرسل رقم المحفظة كنص مكوّن من 11 رقمًا مصريًا يبدأ بـ 01. لا ترسل صورة في هذه الخطوة.")
+            return await m.reply_text("الخطوة 2 من 4 — أرسل رقم الكاش كنص.")
         if not raw.isascii() or not raw.isdigit() or len(raw)!=11 or not raw.startswith("01"):
-            return await m.reply_text("رقم المحفظة غير صحيح. يجب أن يتكوّن من 11 رقمًا بالضبط ويبدأ بـ 01.\nمثال للشكل: 01012345678\nأعد إرسال الرقم فقط.")
-        ctx.user_data["draft"]["wallet"]=raw; ctx.user_data["step"]="amount"
-        return await m.reply_text("الخطوة 2 من 4 — المبلغ\nأرسل قيمة المبلغ الذي حوّلته كرقم فقط، مثل: 250 أو 250.50.\nلا تضف اسم البرنامج أو بيانات أخرى.")
+            return await m.reply_text("رقم الكاش غير صحيح. يجب أن يتكوّن من 11 رقمًا بالضبط ويبدأ بـ 01. أعد إرسال الرقم فقط.")
+        ctx.user_data["draft"]["wallet"]=raw
+        ctx.user_data["step"]="customer_id"
+        return await m.reply_text("الخطوة 3 من 4 — الـ ID الخاص بك\nأرسل الـ ID الذي تريد تسجيله لهذا الطلب.")
+    if step=="customer_id":
+        raw=(m.text or "").strip()
+        if not raw or len(raw)>100:
+            return await m.reply_text("الـ ID مطلوب ويجب ألا يزيد عن 100 حرف. أرسله مرة أخرى.")
+        ctx.user_data["draft"]["customer_id"]=raw
+        ctx.user_data["step"]="amount"
+        return await m.reply_text("الخطوة 4 من 4 — عدد الدولارات\nأرسل عدد الدولارات التي أرسلتها كرقم فقط، مثل: 250 أو 250.50.")
     if step=="amount":
         raw=(m.text or "").strip()
         import re
-        if not re.fullmatch(r"\d{1,9}(?:\.\d{1,2})?",raw) or float(raw)<=0:
-            return await m.reply_text("المبلغ غير صحيح. أرسل رقمًا أكبر من صفر، ويمكنك استخدام منزلتين عشريتين فقط.\nمثال: 250 أو 250.50")
-        ctx.user_data["draft"]["amount"]=raw; ctx.user_data["step"]="proof"
-        return await m.reply_text("الخطوة 3 من 4 — صورة إثبات التحويل\nأرسل صورة إيصال التحويل الأصلي بصيغة صورة داخل تيليجرام. نقبل الصور فقط، ولا نقبل الملفات أو الفيديو أو الملصقات.\nتأكد أن المبلغ والتاريخ وبيانات العملية واضحة، ولا تُخفِ المعلومات اللازمة للتحقق. لا ترسل كلمات مرور أو رموز تحقق.")
-    if step=="proof":
-        if not m.photo:
-            return await m.reply_text("الخطوة 3 من 4 — مطلوب صورة إثبات\nلم يتم قبول الرسالة لأنها ليست صورة عادية مرسلة داخل تيليجرام. أرسل صورة الإيصال بصيغة صورة، وليس كملف أو فيديو أو ملصق.")
-        if m.photo[-1].file_size and m.photo[-1].file_size>10*1024*1024:
-            return await m.reply_text("حجم الصورة أكبر من الحد المسموح (10 ميجابايت). أرسل صورة أصغر وواضحة.")
+        if not re.fullmatch(r"\\d{1,9}(?:\\.\\d{1,2})?",raw) or float(raw)<=0:
+            return await m.reply_text("عدد الدولارات غير صحيح. أرسل رقمًا أكبر من صفر، ويمكنك استخدام منزلتين عشريتين فقط. مثال: 250 أو 250.50")
+        ctx.user_data["draft"]["amount"]=raw
         d=ctx.user_data["draft"]
         with db() as c:
             dup=c.execute("SELECT id FROM requests WHERE wallet=? AND amount=? AND created_at>=? ORDER BY id DESC LIMIT 1",(d["wallet"],d["amount"],datetime.now(timezone.utc).replace(hour=0,minute=0,second=0).isoformat())).fetchone()
-            cur=c.execute("INSERT INTO requests(user_id,username,full_name,program_id,program_name,program_code,wallet,amount,photo,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'pending',?)",(user.id,user.username or "",user.full_name,d["pid"],d["name"],d["code"],d["wallet"],d["amount"],m.photo[-1].file_id,now())); rid=cur.lastrowid
+            cur=c.execute("INSERT INTO requests(user_id,username,full_name,program_id,program_name,program_code,wallet,customer_id,amount,photo,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?)",(user.id,user.username or "",user.full_name,d["pid"],d["name"],d["code"],d["wallet"],d["customer_id"],d["amount"],d["photo"],now())); rid=cur.lastrowid
         ctx.user_data.clear(); audit(user.id,"request_submitted",str(rid))
-        await m.reply_text(f"الخطوة 4 من 4 — تم إرسال الطلب بنجاح\nرقم الطلب: #{rid}\nالحالة: قيد المراجعة\nستصلك رسالة بعد مراجعة الإدارة. احتفظ برقم الطلب للمتابعة.")
+        await m.reply_text(f"تم إرسال البيانات بنجاح.\nرقم الطلب: #{rid}\nالحالة: قيد المراجعة\nستصلك رسالة بعد مراجعة الإدارة. احتفظ برقم الطلب للمتابعة.")
         for aid in admins():
             if dup:
                 try: await ctx.bot.send_message(aid,f"تنبيه تكرار محتمل في الطلب #{rid}؛ يطابق المحفظة والمبلغ في الطلب #{dup['id']}.")
                 except Exception: pass
             try:
-                await ctx.bot.send_photo(aid,m.photo[-1].file_id,caption=f"طلب جديد #{rid}\nالمستخدم: {user.full_name} (@{user.username or 'بدون اسم'})\nTelegram ID: {user.id}\nالبرنامج: {d['name']}\nالكود: {d['code']}\nالمحفظة: {d['wallet']}\nالمبلغ المُدخل: {d['amount']}\nتحقق من وصول الأموال بشكل مستقل.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الطلب",callback_data=f"r:{rid}"),InlineKeyboardButton("قبول",callback_data=f"ok:{rid}"),InlineKeyboardButton("رفض",callback_data=f"no:{rid}")]]))
+                await ctx.bot.send_photo(aid,d["photo"],caption=f"طلب جديد #{rid}\nالمستخدم: {user.full_name} (@{user.username or 'بدون اسم'})\nTelegram ID: {user.id}\nالبرنامج: {d['name']}\nالكود: {d['code']}\nاسكرين شوت التارجت مرفق\nرقم الكاش: {d['wallet']}\nID العميل: {d['customer_id']}\nعدد الدولارات: {d['amount']}\nتحقق من وصول الأموال بشكل مستقل.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الطلب",callback_data=f"r:{rid}"),InlineKeyboardButton("قبول",callback_data=f"ok:{rid}"),InlineKeyboardButton("رفض",callback_data=f"no:{rid}")]]))
             except Exception as e: log.exception("Admin notification failed: %s",e)
         return
     if m.text and m.text.startswith("/"): return
