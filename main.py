@@ -19,7 +19,7 @@ def now():
 
 def csv_safe(value):
     # Prevent spreadsheet formula execution when exported fields are opened in Excel/Sheets.
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\\t", "\\r")):
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
         return "'" + value
     return value
 
