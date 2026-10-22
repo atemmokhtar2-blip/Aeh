@@ -217,7 +217,7 @@ async def callbacks(u,ctx):
     if d=="adminadd:start":
         if not owner(uid): return await q.answer("مالك البوت فقط.",show_alert=True)
         ctx.user_data["step"]="addadmin_id"
-        return await edit(q,"أرسل رقم Telegram ID فقط.")
+        return await edit(q,"أرسل رقم Telegram ID فقط.",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع",callback_data="a:admins")],[InlineKeyboardButton("إلغاء",callback_data="a:admins")]]))
     if d.startswith("adminview:"):
         target=int(d.split(":")[1])
         kb=[]
