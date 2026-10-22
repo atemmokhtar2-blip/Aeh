@@ -97,7 +97,7 @@ async def admin_cmd(u,ctx):
 async def cancel(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("استخدم البوت في الخاص فقط لحماية البيانات.")
-    ctx.user_data.clear(); await u.message.reply_text("تم الإلغاء. أرسل /start للبدء من جديد.")
+    ctx.user_data.clear(); await u.message.reply_text("أهلًا بك، اختر البرنامج المطلوب.",reply_markup=home_kb(u.effective_user.id))
 async def setprogram(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("استخدم البوت في الخاص فقط لحماية البيانات.")
@@ -183,7 +183,7 @@ async def callbacks(u,ctx):
         if not p: return await edit(q,"البرنامج غير متاح.",home_kb())
         ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"]}; ctx.user_data["step"]="wallet"
         return await edit(q,f"الخطوة 1 من 4 — رقم المحفظة\nالبرنامج: {p['name']}\nالكود: {p['code']}\n\nأرسل رقم المحفظة المصرية التي حوّلت منها، مكوّنًا من 11 رقمًا ويبدأ بـ 01.\nمثال للشكل فقط: 01012345678\nلا ترسل أي كلمة مرور أو رمز تحقق.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء العملية",callback_data="ucancel")]]))
-    if d=="ucancel": ctx.user_data.clear(); return await edit(q,"تم الإلغاء.",home_kb())
+    if d=="ucancel": ctx.user_data.clear(); return await edit(q,"أهلًا بك، اختر البرنامج المطلوب.",home_kb(uid))
     if not is_admin(uid): return await q.answer("غير مصرح.",show_alert=True)
     if d=="a:home": return await edit(q,"لوحة تحكم الإدارة",admin_kb())
     if d=="a:pending": return await list_requests(q,"pending")
@@ -214,8 +214,14 @@ async def callbacks(u,ctx):
         with db() as c: c.execute("UPDATE programs SET enabled=1-enabled WHERE id=?",(pid,))
         audit(uid,"program_toggle",str(pid)); return await callbacks_proxy_programs(q)
     if d.startswith("pe:"):
-        ctx.user_data["step"]="editprogram"; ctx.user_data["pid"]=int(d.split(":")[1])
-        return await edit(q,"أرسل الاسم والكود بهذا الشكل: الاسم | الكود",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],[InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")]]))
+        ctx.user_data["pid"]=int(d.split(":")[1])
+        return await edit(q,"اختر ترتيب إدخال بيانات البرنامج:",InlineKeyboardMarkup([[InlineKeyboardButton("الكود ثم الاسم",callback_data=f"peorder:code:{ctx.user_data['pid']}")],[InlineKeyboardButton("الاسم ثم الكود",callback_data=f"peorder:name:{ctx.user_data['pid']}")],[InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],[InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")]]))
+    if d.startswith("peorder:"):
+        _, order, pid = d.split(":")
+        ctx.user_data["step"]="editprogram_code" if order=="code" else "editprogram_name"
+        ctx.user_data["pid"]=int(pid); ctx.user_data["edit_order"]=order
+        first="الكود" if order=="code" else "الاسم"
+        return await edit(q,f"أرسل {first} الجديد للبرنامج رقم {pid}.",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع لاختيار الترتيب",callback_data=f"pe:{pid}")],[InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],[InlineKeyboardButton("إلغاء",callback_data="a:home")]]))
     if d=="a:stats":
         with db() as c:
             total=c.execute("SELECT COUNT(*) FROM requests").fetchone()[0]; pending=c.execute("SELECT COUNT(*) FROM requests WHERE status='pending'").fetchone()[0]; ok=c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]; no=c.execute("SELECT COUNT(*) FROM requests WHERE status='rejected'").fetchone()[0]; users=c.execute("SELECT COUNT(DISTINCT user_id) FROM requests").fetchone()[0]
@@ -323,13 +329,24 @@ async def messages(u,ctx):
         try: await ctx.bot.send_message(r["user_id"],f"تم رفض طلبك #{rid}. السبب: {m.text or 'بدون سبب'}")
         except Exception: pass
         return await m.reply_text(f"تم رفض الطلب #{rid}.",reply_markup=admin_kb())
-    if step=="editprogram":
+    if step in ("editprogram_code","editprogram_name","editprogram_second"):
         if not is_admin(user.id): return
-        parts=[x.strip() for x in (m.text or "").split("|",1)]
-        if len(parts)!=2 or not all(parts): return await m.reply_text("الصيغة: الاسم | الكود")
-        pid=ctx.user_data.get("pid"); ctx.user_data.clear()
-        with db() as c: c.execute("UPDATE programs SET name=?,code=? WHERE id=?",(parts[0][:80],parts[1][:200],pid))
-        audit(user.id,"program_updated",str(pid)); return await m.reply_text("تم تحديث البرنامج.",reply_markup=admin_kb())
+        value=(m.text or "").strip()
+        if not value: return await m.reply_text("أرسل قيمة نصية غير فارغة.")
+        order=ctx.user_data.get("edit_order","name")
+        if step!="editprogram_second":
+            ctx.user_data["edit_first_value"]=value
+            ctx.user_data["step"]="editprogram_second"
+            second="الاسم" if order=="code" else "الكود"
+            return await m.reply_text(f"تم استلام القيمة الأولى. أرسل {second} الآن.")
+        first=ctx.user_data.get("edit_first_value","").strip()
+        pid=ctx.user_data.get("pid")
+        if order=="code": code,name=first,value
+        else: name,code=first,value
+        if not name or not code: return await m.reply_text("الاسم والكود مطلوبان. أعد إدخال البيانات.")
+        ctx.user_data.clear()
+        with db() as c: c.execute("UPDATE programs SET name=?,code=? WHERE id=?",(name[:80],code[:200],pid))
+        audit(user.id,"program_updated",str(pid)); return await m.reply_text("تم تحديث اسم البرنامج والكود بنجاح.",reply_markup=admin_kb())
     if step=="wallet":
         raw=(m.text or "").strip()
         if not raw:
