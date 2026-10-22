@@ -34,7 +34,7 @@ def init_db():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1);
-        CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,customer_id TEXT,amount TEXT,photo TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT);
+        CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,customer_id TEXT,amount TEXT,photo TEXT,payout_photo TEXT,payout_sent_at TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT);
         CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
         CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,added_by INTEGER,added_at TEXT);
         CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY,blocked_by INTEGER NOT NULL,blocked_at TEXT NOT NULL,reason TEXT DEFAULT '');
@@ -45,6 +45,10 @@ def init_db():
         request_columns = {row["name"] for row in c.execute("PRAGMA table_info(requests)")}
         if "customer_id" not in request_columns:
             c.execute("ALTER TABLE requests ADD COLUMN customer_id TEXT")
+        if "payout_photo" not in request_columns:
+            c.execute("ALTER TABLE requests ADD COLUMN payout_photo TEXT")
+        if "payout_sent_at" not in request_columns:
+            c.execute("ALTER TABLE requests ADD COLUMN payout_sent_at TEXT")
         for i in range(1,11):
             c.execute("INSERT OR IGNORE INTO programs VALUES(?,?,?,1)",(i,f"برنامج {i:02d}","لم يحدد الكود بعد"))
         # Seed configured admins only on first database initialization. Do not
@@ -160,7 +164,7 @@ async def request_detail(q,rid):
     else: buttons.append([InlineKeyboardButton("إعادة للمراجعة",callback_data=f"reopen:{rid}")])
     buttons.append([InlineKeyboardButton("رجوع",callback_data="a:pending")])
     await edit(q,text,InlineKeyboardMarkup(buttons))
-    try: await q.message.reply_photo(r["photo"],caption=f"إثبات التحويل للطلب #{rid}")
+    try: await q.message.reply_photo(r["photo"],caption=f"اسكرين شوت التارجت للطلب #{rid}")
     except Exception as e: log.warning("Photo display failed: %s",e)
 async def decide(q,ctx,rid,status,reason=""):
     uid=q.from_user.id
@@ -170,10 +174,20 @@ async def decide(q,ctx,rid,status,reason=""):
         if r["status"]!="pending": return await edit(q,"تم اتخاذ قرار سابق على هذا الطلب.",admin_kb())
         c.execute("UPDATE requests SET status=?,reviewed_at=?,reviewer_id=?,reason=? WHERE id=? AND status='pending'",(status,now(),uid,reason,rid))
     audit(uid,"request_"+status,f"#{rid} {reason}")
-    msg=f"تم قبول طلبك رقم #{rid}." if status=="approved" else f"تم رفض طلبك رقم #{rid}. السبب: {reason}"
+    if status=="approved":
+        ctx.user_data["step"]="payout_photo"
+        ctx.user_data["payout_rid"]=rid
+        usd=float(r["amount"] or 0)
+        egp=usd*50
+        egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
+        await edit(q,f"تم تأكيد وصول الدولارات للوكالة للطلب #{rid}.\\n\\nالمبلغ المستحق: {egp_text} جنيه مصري (سعر الصرف 50 جنيهًا للدولار).\\nحوّل المبلغ للمستخدم من خارج البوت، ثم أرسل هنا صورة التحويل كصورة تيليجرام. لن تُرسل رسالة الدفع للمستخدم قبل رفع الإثبات.",admin_kb())
+        try: await ctx.bot.send_message(r["user_id"],f"تم تأكيد وصول الدولارات الخاصة بطلبك رقم #{rid}. طلبك الآن في مرحلة تحويل المبلغ بالجنيه المصري، وسيصلك إثبات التحويل بعد إتمام الدفع.")
+        except Exception: pass
+        return
+    msg=f"تم رفض طلبك رقم #{rid}. السبب: {reason}"
     try: await ctx.bot.send_message(r["user_id"],msg)
     except Exception: pass
-    await edit(q,f"تم {'قبول' if status=='approved' else 'رفض'} الطلب #{rid} وإبلاغ المستخدم.",admin_kb())
+    await edit(q,f"تم رفض الطلب #{rid} وإبلاغ المستخدم.",admin_kb())
 async def callbacks(u,ctx):
     q=u.callback_query; await q.answer(); uid=q.from_user.id; d=q.data
     if not q.message or q.message.chat.type != "private":
@@ -331,6 +345,34 @@ async def messages(u,ctx):
         ctx.user_data.clear()
         audit(user.id,"admin_added",str(target))
         return await m.reply_text("تمت إضافة المشرف." if target not in [] else "تمت إضافة المشرف.",reply_markup=admin_kb())
+    if step=="payout_photo":
+        if not is_admin(user.id):
+            return
+        rid=ctx.user_data.get("payout_rid")
+        if not m.photo:
+            return await m.reply_text("أرسل صورة التحويل كصورة داخل تيليجرام، وليس كملف أو فيديو. لم يتم إرسال تأكيد الدفع للمستخدم بعد.")
+        with db() as c:
+            r=c.execute("SELECT * FROM requests WHERE id=?",(rid,)).fetchone()
+        if not r or r["status"]!="approved":
+            ctx.user_data.clear()
+            return await m.reply_text("الطلب غير موجود أو لم يتم تأكيده. افتح الطلب من لوحة الإدارة وراجعه من جديد.")
+        usd=float(r["amount"] or 0)
+        egp=usd*50
+        egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
+        caption=(f"✅ تم دفع المبلغ المستحق وقدره: {egp_text} جنيه مصري.\\n\\n"
+                 "📎 مرفق لحضرتك إثبات التحويل.\\n\\n"
+                 "كان معكم الإمبراطور للسحب والشحن.\\n"
+                 "لو في أي مشكلة أو استفسار، يُرجى التواصل مع الدعم.")
+        try:
+            await ctx.bot.send_photo(r["user_id"],m.photo[-1].file_id,caption=caption)
+        except Exception as e:
+            log.exception("Could not send payout proof to user for request %s: %s",rid,e)
+            return await m.reply_text("تعذر إرسال الإثبات للمستخدم. لم يتم تسجيل الدفع كمكتمل. تأكد أن المستخدم بدأ البوت ولم يحظرك، ثم أعد المحاولة.")
+        with db() as c:
+            c.execute("UPDATE requests SET payout_photo=?,payout_sent_at=? WHERE id=? AND status='approved'",(m.photo[-1].file_id,now(),rid))
+        audit(user.id,"payout_proof_sent",f"#{rid}")
+        ctx.user_data.clear()
+        return await m.reply_text(f"تم إرسال صورة إثبات التحويل ورسالة تأكيد الدفع للمستخدم بنجاح للطلب #{rid}.",reply_markup=admin_kb())
     if step=="reject":
         if not is_admin(user.id): return
         rid=ctx.user_data.get("rid"); ctx.user_data.clear()
