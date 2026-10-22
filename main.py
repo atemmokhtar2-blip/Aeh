@@ -7,8 +7,10 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("aeh")
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
-INITIAL_ADMINS = {int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
-OWNER = min(INITIAL_ADMINS) if INITIAL_ADMINS else None
+ADMIN_ID_ORDER = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
+INITIAL_ADMINS = set(ADMIN_ID_ORDER)
+OWNER_RAW = os.getenv("OWNER_ID", "").strip()
+OWNER = int(OWNER_RAW) if OWNER_RAW.isdigit() else (ADMIN_ID_ORDER[0] if ADMIN_ID_ORDER else None)
 DB_PATH = os.getenv("DB_PATH", "aeh.sqlite3")
 LABELS = {"pending": "قيد المراجعة", "approved": "مقبول", "rejected": "مرفوض"}
 
@@ -33,8 +35,14 @@ def init_db():
         """)
         for i in range(1,11):
             c.execute("INSERT OR IGNORE INTO programs VALUES(?,?,?,1)",(i,f"برنامج {i:02d}","لم يحدد الكود بعد"))
-        for aid in INITIAL_ADMINS:
-            c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(aid,aid,now()))
+        # Seed configured admins only on first database initialization. Do not
+        # re-add deleted admins on every restart.
+        admin_count = c.execute("SELECT COUNT(*) FROM admins").fetchone()[0]
+        if admin_count == 0:
+            for aid in INITIAL_ADMINS:
+                c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(aid,aid,now()))
+        if OWNER is not None:
+            c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(OWNER,OWNER,now()))
 
 def admins():
     with db() as c: return [r[0] for r in c.execute("SELECT user_id FROM admins")]
@@ -88,6 +96,7 @@ async def deladmin(u,ctx):
     if not ctx.args or not ctx.args[0].isdigit(): return await u.message.reply_text("الاستخدام: /deladmin TELEGRAM_ID")
     target=int(ctx.args[0])
     if target==OWNER: return await u.message.reply_text("لا يمكن حذف المالك الأساسي.")
+    if target not in admins(): return await u.message.reply_text("هذا الرقم ليس مشرفًا مسجلًا.")
     with db() as c: c.execute("DELETE FROM admins WHERE user_id=?",(target,))
     audit(uid,"admin_removed",str(target)); await u.message.reply_text("تم حذف المشرف إن كان موجودًا.")
 async def usercmd(u,ctx):
@@ -248,6 +257,8 @@ def main():
     if not INITIAL_ADMINS: raise RuntimeError("Set ADMIN_IDS to at least one numeric Telegram ID.")
     init_db()
     app=Application.builder().token(TOKEN).build()
+    if OWNER is None or OWNER not in INITIAL_ADMINS:
+        raise RuntimeError("Set OWNER_ID to the intended owner Telegram ID and include that ID in ADMIN_IDS.")
     for command,fn in [("start",start),("admin",admin_cmd),("cancel",cancel),("setprogram",setprogram),("addadmin",addadmin),("deladmin",deladmin),("user",usercmd)]:
         app.add_handler(CommandHandler(command,fn))
     app.add_handler(CallbackQueryHandler(callbacks))
