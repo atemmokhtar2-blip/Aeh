@@ -182,7 +182,7 @@ async def callbacks(u,ctx):
         with db() as c: p=c.execute("SELECT * FROM programs WHERE id=? AND enabled=1",(pid,)).fetchone()
         if not p: return await edit(q,"البرنامج غير متاح.",home_kb())
         ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"]}; ctx.user_data["step"]="wallet"
-        return await edit(q,f"البرنامج: {p['name']}\nالكود الخاص به:\n{p['code']}\n\nأرسل رقم المحفظة التي استخدمتها في التحويل. لا ترسل كلمات مرور أو رموز تحقق.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء",callback_data="ucancel")]]))
+        return await edit(q,f"الخطوة 1 من 4 — رقم المحفظة\nالبرنامج: {p['name']}\nالكود: {p['code']}\n\nأرسل رقم المحفظة المصرية التي حوّلت منها، مكوّنًا من 11 رقمًا ويبدأ بـ 01.\nمثال للشكل فقط: 01012345678\nلا ترسل أي كلمة مرور أو رمز تحقق.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء العملية",callback_data="ucancel")]]))
     if d=="ucancel": ctx.user_data.clear(); return await edit(q,"تم الإلغاء.",home_kb())
     if not is_admin(uid): return await q.answer("غير مصرح.",show_alert=True)
     if d=="a:home": return await edit(q,"لوحة تحكم الإدارة",admin_kb())
@@ -331,22 +331,31 @@ async def messages(u,ctx):
         with db() as c: c.execute("UPDATE programs SET name=?,code=? WHERE id=?",(parts[0][:80],parts[1][:200],pid))
         audit(user.id,"program_updated",str(pid)); return await m.reply_text("تم تحديث البرنامج.",reply_markup=admin_kb())
     if step=="wallet":
-        if not m.text: return await m.reply_text("أرسل رقم المحفظة كنص.")
-        if not 4<=len(m.text.strip())<=80: return await m.reply_text("رقم المحفظة غير واضح، أعد إرساله.")
-        ctx.user_data["draft"]["wallet"]=m.text.strip(); ctx.user_data["step"]="amount"
-        return await m.reply_text("أرسل المبلغ مع العملة (مثال: 25 USD).")
+        raw=(m.text or "").strip()
+        if not raw:
+            return await m.reply_text("الخطوة 1 من 4 — رقم المحفظة\nأرسل رقم المحفظة كنص مكوّن من 11 رقمًا مصريًا يبدأ بـ 01. لا ترسل صورة في هذه الخطوة.")
+        if not raw.isascii() or not raw.isdigit() or len(raw)!=11 or not raw.startswith("01"):
+            return await m.reply_text("رقم المحفظة غير صحيح. يجب أن يتكوّن من 11 رقمًا بالضبط ويبدأ بـ 01.\nمثال للشكل: 01012345678\nأعد إرسال الرقم فقط.")
+        ctx.user_data["draft"]["wallet"]=raw; ctx.user_data["step"]="amount"
+        return await m.reply_text("الخطوة 2 من 4 — المبلغ\nأرسل قيمة المبلغ الذي حوّلته كرقم فقط، مثل: 250 أو 250.50.\nلا تضف اسم البرنامج أو بيانات أخرى.")
     if step=="amount":
-        if not m.text or not any(ch.isdigit() for ch in m.text): return await m.reply_text("أرسل مبلغًا صحيحًا، مثال: 25 USD.")
-        ctx.user_data["draft"]["amount"]=m.text.strip()[:50]; ctx.user_data["step"]="proof"
-        return await m.reply_text("أرسل صورة واضحة لإثبات التحويل. لا ترسل كلمات مرور أو رموز تحقق.")
+        raw=(m.text or "").strip()
+        import re
+        if not re.fullmatch(r"\d{1,9}(?:\.\d{1,2})?",raw) or float(raw)<=0:
+            return await m.reply_text("المبلغ غير صحيح. أرسل رقمًا أكبر من صفر، ويمكنك استخدام منزلتين عشريتين فقط.\nمثال: 250 أو 250.50")
+        ctx.user_data["draft"]["amount"]=raw; ctx.user_data["step"]="proof"
+        return await m.reply_text("الخطوة 3 من 4 — صورة إثبات التحويل\nأرسل صورة إيصال التحويل الأصلي بصيغة صورة داخل تيليجرام. نقبل الصور فقط، ولا نقبل الملفات أو الفيديو أو الملصقات.\nتأكد أن المبلغ والتاريخ وبيانات العملية واضحة، ولا تُخفِ المعلومات اللازمة للتحقق. لا ترسل كلمات مرور أو رموز تحقق.")
     if step=="proof":
-        if not m.photo: return await m.reply_text("أرسل الإثبات كصورة.")
+        if not m.photo:
+            return await m.reply_text("الخطوة 3 من 4 — مطلوب صورة إثبات\nلم يتم قبول الرسالة لأنها ليست صورة عادية مرسلة داخل تيليجرام. أرسل صورة الإيصال بصيغة صورة، وليس كملف أو فيديو أو ملصق.")
+        if m.photo[-1].file_size and m.photo[-1].file_size>10*1024*1024:
+            return await m.reply_text("حجم الصورة أكبر من الحد المسموح (10 ميجابايت). أرسل صورة أصغر وواضحة.")
         d=ctx.user_data["draft"]
         with db() as c:
             dup=c.execute("SELECT id FROM requests WHERE wallet=? AND amount=? AND created_at>=? ORDER BY id DESC LIMIT 1",(d["wallet"],d["amount"],datetime.now(timezone.utc).replace(hour=0,minute=0,second=0).isoformat())).fetchone()
             cur=c.execute("INSERT INTO requests(user_id,username,full_name,program_id,program_name,program_code,wallet,amount,photo,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'pending',?)",(user.id,user.username or "",user.full_name,d["pid"],d["name"],d["code"],d["wallet"],d["amount"],m.photo[-1].file_id,now())); rid=cur.lastrowid
         ctx.user_data.clear(); audit(user.id,"request_submitted",str(rid))
-        await m.reply_text(f"تم استلام طلبك رقم #{rid}.\nالحالة: قيد المراجعة. ستصلك النتيجة بعد مراجعة الإدارة.")
+        await m.reply_text(f"الخطوة 4 من 4 — تم إرسال الطلب بنجاح\nرقم الطلب: #{rid}\nالحالة: قيد المراجعة\nستصلك رسالة بعد مراجعة الإدارة. احتفظ برقم الطلب للمتابعة.")
         for aid in admins():
             if dup:
                 try: await ctx.bot.send_message(aid,f"تنبيه تكرار محتمل في الطلب #{rid}؛ يطابق المحفظة والمبلغ في الطلب #{dup['id']}.")
