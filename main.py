@@ -208,10 +208,40 @@ async def callbacks(u,ctx):
             total=c.execute("SELECT COUNT(*) FROM requests").fetchone()[0]; pending=c.execute("SELECT COUNT(*) FROM requests WHERE status='pending'").fetchone()[0]; ok=c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]; no=c.execute("SELECT COUNT(*) FROM requests WHERE status='rejected'").fetchone()[0]; users=c.execute("SELECT COUNT(DISTINCT user_id) FROM requests").fetchone()[0]
         return await edit(q,f"الإحصائيات\nإجمالي الطلبات: {total}\nمعلقة: {pending}\nمقبولة: {ok}\nمرفوضة: {no}\nمستخدمون: {users}\nالمبالغ مدخلة من المستخدمين وليست إيرادات مؤكدة.",admin_kb())
     if d=="a:admins":
-        return await edit(q,"المشرفون: "+", ".join(map(str,admins()))+"\nإضافة: /addadmin TELEGRAM_ID\nحذف: /deladmin TELEGRAM_ID",admin_kb())
+        rows=admins(); kb=[]
+        for aid in rows:
+            kb.append([InlineKeyboardButton(f"👤 {aid}"+(" · المالك" if aid==OWNER else ""),callback_data=f"adminview:{aid}")])
+        if owner(uid): kb.append([InlineKeyboardButton("➕ إضافة مشرف",callback_data="adminadd:start")])
+        kb.append([InlineKeyboardButton("رجوع",callback_data="a:home")])
+        return await edit(q,"إدارة المشرفين",InlineKeyboardMarkup(kb))
+    if d=="adminadd:start":
+        if not owner(uid): return await q.answer("مالك البوت فقط.",show_alert=True)
+        ctx.user_data["step"]="addadmin_id"
+        return await edit(q,"أرسل رقم Telegram ID فقط.")
+    if d.startswith("adminview:"):
+        target=int(d.split(":")[1])
+        kb=[]
+        if owner(uid) and target!=OWNER: kb.append([InlineKeyboardButton("حذف المشرف",callback_data=f"admindel:{target}")])
+        kb.append([InlineKeyboardButton("رجوع",callback_data="a:admins")])
+        return await edit(q,f"المشرف: {target}",InlineKeyboardMarkup(kb))
+    if d.startswith("admindel:"):
+        if not owner(uid): return await q.answer("مالك البوت فقط.",show_alert=True)
+        target=int(d.split(":")[1])
+        if target==OWNER: return await edit(q,"لا يمكن حذف المالك.",admin_kb())
+        with db() as c: c.execute("DELETE FROM admins WHERE user_id=?",(target,))
+        audit(uid,"admin_removed",str(target))
+        return await edit(q,"تم حذف المشرف.",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع",callback_data="a:admins")]]))
     if d=="a:users":
         with db() as c: rs=c.execute("SELECT user_id,MAX(username) username,COUNT(*) n FROM requests GROUP BY user_id ORDER BY MAX(id) DESC LIMIT 20").fetchall()
-        return await edit(q,"آخر المستخدمين أصحاب الطلبات:\n"+"\n".join(f"{r['user_id']} @{r['username'] or 'بدون اسم'} · {r['n']} طلب" for r in rs),admin_kb())
+        kb=[[InlineKeyboardButton(f"{r['username'] and '@'+r['username'] or str(r['user_id'])} · {r['n']} طلب",callback_data=f"userdetail:{r['user_id']}")] for r in rs]
+        kb.append([InlineKeyboardButton("رجوع",callback_data="a:home")])
+        return await edit(q,"المستخدمون",InlineKeyboardMarkup(kb))
+    if d.startswith("userdetail:"):
+        target=int(d.split(":")[1])
+        with db() as c: rs=c.execute("SELECT id,program_name,amount,status FROM requests WHERE user_id=? ORDER BY id DESC LIMIT 20",(target,)).fetchall()
+        kb=[[InlineKeyboardButton(f"#{r['id']} · {LABELS[r['status']]}",callback_data=f"r:{r['id']}")] for r in rs]
+        kb.append([InlineKeyboardButton("رجوع للمستخدمين",callback_data="a:users")])
+        return await edit(q,f"طلبات المستخدم {target}",InlineKeyboardMarkup(kb))
     if d=="a:log":
         with db() as c: rs=c.execute("SELECT * FROM activity ORDER BY id DESC LIMIT 15").fetchall()
         return await edit(q,"آخر الأنشطة:\n"+"\n".join(f"#{r['id']} {r['action']} | {r['actor']} | {r['details']}" for r in rs),admin_kb())
@@ -232,6 +262,16 @@ async def messages(u,ctx):
     if not m or not user: return
     if not u.effective_chat or u.effective_chat.type != "private":
         return await m.reply_text("لحماية رقم المحفظة وصورة التحويل، أرسل البيانات في الخاص فقط.")
+    if step=="addadmin_id":
+        if not owner(user.id): ctx.user_data.clear(); return
+        raw=(m.text or "").strip()
+        if not raw.isdigit(): return await m.reply_text("أرسل رقم Telegram ID فقط، بدون أي كلام إضافي.")
+        target=int(raw)
+        if target<=0: return await m.reply_text("رقم ID غير صحيح. أرسل الرقم فقط.")
+        with db() as c: c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(target,user.id,now()))
+        ctx.user_data.clear()
+        audit(user.id,"admin_added",str(target))
+        return await m.reply_text("تمت إضافة المشرف." if target not in [] else "تمت إضافة المشرف.",reply_markup=admin_kb())
     if step=="reject":
         if not is_admin(user.id): return
         rid=ctx.user_data.get("rid"); ctx.user_data.clear()
