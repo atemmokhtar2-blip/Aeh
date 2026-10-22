@@ -12,14 +12,14 @@ Telegram bot for a configurable 10-program menu, user-submitted wallet/payment p
 
 ## Setup
 1. Create a bot with BotFather and copy its token.
-2. Set environment variables `BOT_TOKEN` and `ADMIN_IDS` (comma-separated Telegram numeric IDs, e.g. `123456789,987654321`).
+2. Set `BOT_TOKEN`, `ADMIN_IDS` (comma-separated numeric Telegram IDs), and `OWNER_ID` (the intended owner's numeric Telegram ID, which must also appear in `ADMIN_IDS`).
 3. Install dependencies with `pip install -r requirements.txt`.
 4. Run `python main.py`.
 
 For Railway, add the same variables in the service's Variables tab and use `python main.py` as the start command. Keep a persistent volume mounted at `/data` and set `DB_PATH=/data/aeh.sqlite3` so SQLite data survives redeploys. If `DB_PATH` is not set, the database is created as `aeh.sqlite3` in the current directory.
 
 ## Admin use
-Send `/admin` to the bot from a configured admin account. Use **Programs** to replace placeholder names/codes, **Admins** to manage admin IDs, **Requests** to review submissions, and **Export CSV** for a report. The first configured admin is the owner and is the only one allowed to add/remove other admins.
+Send `/admin` to the bot from a configured admin account. Use **Programs** to replace placeholder names/codes, **Admins** to manage admin IDs, **Requests** to review submissions, and **Export CSV** for a report. `OWNER_ID` is the owner and is the only account allowed to add/remove other admins. Set it explicitly; removed admins are not automatically restored on restart.
 
 ## Payment verification
 The amount and image are user-submitted claims, not proof that funds actually arrived. Verify the transfer independently before approving. The bot records the decision and notifies the user, but it does not move money or verify wallets automatically.
