@@ -70,6 +70,8 @@ def admin_kb():
     [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs"),InlineKeyboardButton("الإحصائيات",callback_data="a:stats")],
     [InlineKeyboardButton("المستخدمون",callback_data="a:users"),InlineKeyboardButton("المشرفون",callback_data="a:admins")],
     [InlineKeyboardButton("تصدير CSV",callback_data="a:export"),InlineKeyboardButton("سجل النشاط",callback_data="a:log")]])
+def back_kb(target="a:home"):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data=target)]])
 async def edit(q,text,kb=None):
     try: await q.edit_message_text(text,reply_markup=kb)
     except Exception: await q.message.reply_text(text,reply_markup=kb)
@@ -182,7 +184,7 @@ async def callbacks(u,ctx):
     if d.startswith("ok:"): return await decide(q,ctx,int(d.split(":")[1]),"approved")
     if d.startswith("no:"):
         ctx.user_data["step"]="reject"; ctx.user_data["rid"]=int(d.split(":")[1])
-        return await edit(q,"أرسل سبب الرفض في رسالة واحدة. أرسل /cancel للإلغاء.")
+        return await edit(q,"أرسل سبب الرفض في رسالة واحدة.",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع للطلب",callback_data=f"r:{ctx.user_data['rid']}")],[InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")]]))
     if d.startswith("reopen:"):
         rid=int(d.split(":")[1])
         with db() as c: c.execute("UPDATE requests SET status='pending',reviewed_at=NULL,reviewer_id=NULL,reason=NULL WHERE id=?",(rid,)); r=c.execute("SELECT user_id FROM requests WHERE id=?",(rid,)).fetchone()
@@ -195,6 +197,7 @@ async def callbacks(u,ctx):
         rows=get_programs(); kb=[]
         for p in rows: kb.append([InlineKeyboardButton(f"{p['id']}. {p['name']} ({'مفعّل' if p['enabled'] else 'متوقف'})",callback_data=f"pe:{p['id']}"),InlineKeyboardButton("إيقاف" if p["enabled"] else "تفعيل",callback_data=f"pt:{p['id']}")])
         kb.append([InlineKeyboardButton("رجوع",callback_data="a:home")])
+        kb.append([InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")])
         return await edit(q,"إدارة البرامج. اضغط الاسم لتعديله، أو استخدم /setprogram رقم | الاسم | الكود.",InlineKeyboardMarkup(kb))
     if d.startswith("pt:"):
         pid=int(d.split(":")[1])
@@ -202,11 +205,11 @@ async def callbacks(u,ctx):
         audit(uid,"program_toggle",str(pid)); return await callbacks_proxy_programs(q)
     if d.startswith("pe:"):
         ctx.user_data["step"]="editprogram"; ctx.user_data["pid"]=int(d.split(":")[1])
-        return await edit(q,"أرسل الاسم والكود بهذا الشكل: الاسم | الكود")
+        return await edit(q,"أرسل الاسم والكود بهذا الشكل: الاسم | الكود",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],[InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")]]))
     if d=="a:stats":
         with db() as c:
             total=c.execute("SELECT COUNT(*) FROM requests").fetchone()[0]; pending=c.execute("SELECT COUNT(*) FROM requests WHERE status='pending'").fetchone()[0]; ok=c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]; no=c.execute("SELECT COUNT(*) FROM requests WHERE status='rejected'").fetchone()[0]; users=c.execute("SELECT COUNT(DISTINCT user_id) FROM requests").fetchone()[0]
-        return await edit(q,f"الإحصائيات\nإجمالي الطلبات: {total}\nمعلقة: {pending}\nمقبولة: {ok}\nمرفوضة: {no}\nمستخدمون: {users}\nالمبالغ مدخلة من المستخدمين وليست إيرادات مؤكدة.",admin_kb())
+        return await edit(q,f"الإحصائيات\nإجمالي الطلبات: {total}\nمعلقة: {pending}\nمقبولة: {ok}\nمرفوضة: {no}\nمستخدمون: {users}\nالمبالغ مدخلة من المستخدمين وليست إيرادات مؤكدة.",back_kb())
     if d=="a:admins":
         rows=admins(); kb=[]
         for aid in rows:
@@ -244,14 +247,14 @@ async def callbacks(u,ctx):
         return await edit(q,f"طلبات المستخدم {target}",InlineKeyboardMarkup(kb))
     if d=="a:log":
         with db() as c: rs=c.execute("SELECT * FROM activity ORDER BY id DESC LIMIT 15").fetchall()
-        return await edit(q,"آخر الأنشطة:\n"+"\n".join(f"#{r['id']} {r['action']} | {r['actor']} | {r['details']}" for r in rs),admin_kb())
+        return await edit(q,"آخر الأنشطة:\n"+"\n".join(f"#{r['id']} {r['action']} | {r['actor']} | {r['details']}" for r in rs),back_kb())
     if d=="a:export":
         with db() as c: rs=c.execute("SELECT * FROM requests ORDER BY id DESC").fetchall()
         out=io.StringIO(); w=csv.writer(out); w.writerow(["id","user_id","username","program","wallet","amount_claimed","status","created_at","reviewed_at","reviewer_id","reason"])
         for r in rs: w.writerow([csv_safe(v) for v in [r["id"],r["user_id"],r["username"],r["program_name"],r["wallet"],r["amount"],r["status"],r["created_at"],r["reviewed_at"],r["reviewer_id"],r["reason"]]])
         b=io.BytesIO(out.getvalue().encode("utf-8-sig")); b.name="aeh_requests.csv"
         await ctx.bot.send_document(q.message.chat_id,InputFile(b),caption="تقرير الطلبات. المبالغ مدخلة من المستخدمين وليست مبالغ مؤكدة.")
-        return await edit(q,"تم تجهيز التقرير.",admin_kb())
+        return await edit(q,"تم تجهيز التقرير.",back_kb())
 async def callbacks_proxy_programs(q):
     rows=get_programs(); kb=[]
     for p in rows: kb.append([InlineKeyboardButton(f"{p['id']}. {p['name']} ({'مفعّل' if p['enabled'] else 'متوقف'})",callback_data=f"pe:{p['id']}"),InlineKeyboardButton("إيقاف" if p["enabled"] else "تفعيل",callback_data=f"pt:{p['id']}")])
