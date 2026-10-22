@@ -1,7 +1,7 @@
 import csv, io, logging, os, sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update, ForceReply
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -35,6 +35,8 @@ def init_db():
         c.executescript("""
         CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,customer_id TEXT,amount TEXT,photo TEXT,payout_photo TEXT,payout_sent_at TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT);
+        CREATE TABLE IF NOT EXISTS payout_prompts(admin_id INTEGER NOT NULL,prompt_message_id INTEGER NOT NULL,request_id INTEGER NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(admin_id,prompt_message_id));
+        CREATE TABLE IF NOT EXISTS payout_drafts(request_id INTEGER NOT NULL,admin_id INTEGER NOT NULL,photo TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(request_id,admin_id));
         CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
         CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,added_by INTEGER,added_at TEXT);
         CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY,blocked_by INTEGER NOT NULL,blocked_at TEXT NOT NULL,reason TEXT DEFAULT '');
@@ -175,12 +177,11 @@ async def decide(q,ctx,rid,status,reason=""):
         c.execute("UPDATE requests SET status=?,reviewed_at=?,reviewer_id=?,reason=? WHERE id=? AND status='pending'",(status,now(),uid,reason,rid))
     audit(uid,"request_"+status,f"#{rid} {reason}")
     if status=="approved":
-        ctx.user_data["step"]="payout_photo"
-        ctx.user_data["payout_rid"]=rid
         usd=float(r["amount"] or 0)
         egp=usd*50
         egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
-        await edit(q,f"تم تأكيد وصول الدولارات للوكالة للطلب #{rid}.\n\nالمبلغ المستحق: {egp_text} جنيه مصري (سعر الصرف 50 جنيهًا للدولار).\nحوّل المبلغ للمستخدم من خارج البوت، ثم أرسل هنا صورة التحويل كصورة تيليجرام. لن تُرسل رسالة الدفع للمستخدم قبل رفع الإثبات.",admin_kb())
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton("رفع صورة إثبات التحويل",callback_data=f"payout_upload:{rid}")],[InlineKeyboardButton("عرض الطلب",callback_data=f"r:{rid}")]])
+        await edit(q,f"تم تأكيد وصول الدولارات للوكالة للطلب #{rid}.\n\nالمبلغ المستحق: {egp_text} جنيه مصري (سعر الصرف 50 جنيهًا للدولار).\nحوّل المبلغ للمستخدم من خارج البوت، ثم اضغط «رفع صورة إثبات التحويل». ستظهر لك معاينة للصورة قبل إرسالها للمستخدم.",kb)
         try: await ctx.bot.send_message(r["user_id"],f"تم تأكيد وصول الدولارات الخاصة بطلبك رقم #{rid}. طلبك الآن في مرحلة تحويل المبلغ بالجنيه المصري، وسيصلك إثبات التحويل بعد إتمام الدفع.")
         except Exception: pass
         return
@@ -211,6 +212,44 @@ async def callbacks(u,ctx):
         return await edit(q,checklist + "\n\nالخطوة 1 من 4 — أرسل اسكرين شوت التارجت كصورة داخل تيليجرام.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء العملية",callback_data="ucancel")]]))
     if d=="ucancel": ctx.user_data.clear(); return await edit(q,"أهلًا بك، اختر البرنامج المطلوب.",home_kb(uid))
     if not is_admin(uid): return await q.answer("غير مصرح.",show_alert=True)
+    if d.startswith("payout_upload:"):
+        rid=int(d.split(":")[1])
+        with db() as c: r=c.execute("SELECT * FROM requests WHERE id=?",(rid,)).fetchone()
+        if not r or r["status"]!="approved" or r["payout_sent_at"]:
+            return await edit(q,"هذا الطلب غير موجود أو لم يعد بحاجة إلى إثبات دفع.",admin_kb())
+        prompt=await q.message.reply_text(f"الطلب #{rid} — بعد إجراء التحويل خارج البوت، ردّ على هذه الرسالة بصورة التحويل. ستظهر لك معاينة وزر إرسال قبل وصولها للمستخدم.",reply_markup=ForceReply(selective=True))
+        with db() as c: c.execute("INSERT OR REPLACE INTO payout_prompts(admin_id,prompt_message_id,request_id,created_at) VALUES(?,?,?,?)",(uid,prompt.message_id,rid,now()))
+        return
+    if d.startswith("payout_cancel:"):
+        rid=int(d.split(":")[1])
+        with db() as c: c.execute("DELETE FROM payout_drafts WHERE request_id=? AND admin_id=?",(rid,uid))
+        return await edit(q,f"تم إلغاء إرسال الإثبات للطلب #{rid}. لم يتم إرسال شيء للمستخدم.",InlineKeyboardMarkup([[InlineKeyboardButton("إعادة رفع صورة الإثبات",callback_data=f"payout_upload:{rid}")],[InlineKeyboardButton("لوحة الإدارة",callback_data="a:home")]]))
+    if d.startswith("payout_send:"):
+        rid=int(d.split(":")[1])
+        with db() as c:
+            r=c.execute("SELECT * FROM requests WHERE id=?",(rid,)).fetchone()
+            draft=c.execute("SELECT photo FROM payout_drafts WHERE request_id=? AND admin_id=?",(rid,uid)).fetchone()
+            if not r or r["status"]!="approved" or not draft or r["payout_sent_at"]:
+                return await edit(q,"لا يمكن إرسال الإثبات: الطلب غير معتمد، أو لا توجد معاينة صالحة، أو تم إرسال الإثبات مسبقًا.")
+            cur=c.execute("UPDATE requests SET payout_sent_at='SENDING' WHERE id=? AND status='approved' AND payout_sent_at IS NULL",(rid,))
+            if cur.rowcount!=1: return await edit(q,"تم بدء إرسال إثبات هذا الطلب بالفعل أو تم إرساله.")
+            photo_id=draft["photo"]
+        usd=float(r["amount"] or 0); egp=usd*50; egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
+        caption=(f"✅ تم دفع المبلغ المستحق وقدره: {egp_text} جنيه مصري.\n\n"
+                 "📎 مرفق لحضرتك إثبات التحويل.\n\n"
+                 "كان معكم الإمبراطور للسحب والشحن.\n"
+                 "لو في أي مشكلة أو استفسار، يُرجى التواصل مع الدعم.")
+        try: await ctx.bot.send_photo(r["user_id"],photo_id,caption=caption)
+        except Exception as e:
+            log.exception("Could not send payout proof to user for request %s: %s",rid,e)
+            with db() as c: c.execute("UPDATE requests SET payout_sent_at=NULL WHERE id=? AND payout_sent_at='SENDING'",(rid,))
+            return await edit(q,"تعذر إرسال الإثبات للمستخدم. لم يتم تأكيد الدفع. يمكنك المحاولة مرة أخرى من المعاينة.")
+        with db() as c:
+            c.execute("UPDATE requests SET payout_photo=?,payout_sent_at=? WHERE id=? AND payout_sent_at='SENDING'",(photo_id,now(),rid))
+            c.execute("DELETE FROM payout_drafts WHERE request_id=? AND admin_id=?",(rid,uid))
+            c.execute("DELETE FROM payout_prompts WHERE request_id=?",(rid,))
+        audit(uid,"payout_proof_sent",f"#{rid}")
+        return await edit(q,f"تم إرسال صورة إثبات التحويل ورسالة تأكيد الدفع للمستخدم بنجاح للطلب #{rid}.",admin_kb())
     if d=="a:home": return await edit(q,"لوحة تحكم الإدارة",admin_kb())
     if d=="a:pending": return await list_requests(q,"pending")
     if d=="a:all": return await list_requests(q,"all")
@@ -345,34 +384,23 @@ async def messages(u,ctx):
         ctx.user_data.clear()
         audit(user.id,"admin_added",str(target))
         return await m.reply_text("تمت إضافة المشرف." if target not in [] else "تمت إضافة المشرف.",reply_markup=admin_kb())
+    if m.photo and m.reply_to_message:
+        with db() as c: prompt=c.execute("SELECT request_id FROM payout_prompts WHERE admin_id=? AND prompt_message_id=?",(user.id,m.reply_to_message.message_id)).fetchone()
+        if prompt:
+            rid=prompt["request_id"]
+            with db() as c:
+                r=c.execute("SELECT * FROM requests WHERE id=?",(rid,)).fetchone()
+                if not r or r["status"]!="approved" or r["payout_sent_at"]:
+                    c.execute("DELETE FROM payout_prompts WHERE admin_id=? AND prompt_message_id=?",(user.id,m.reply_to_message.message_id))
+                    return await m.reply_text("الطلب غير موجود أو تم إرسال إثباته بالفعل.")
+                c.execute("INSERT OR REPLACE INTO payout_drafts(request_id,admin_id,photo,created_at) VALUES(?,?,?,?)",(rid,user.id,m.photo[-1].file_id,now()))
+                c.execute("DELETE FROM payout_prompts WHERE admin_id=? AND prompt_message_id=?",(user.id,m.reply_to_message.message_id))
+            egp=float(r["amount"] or 0)*50; egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
+            caption=(f"معاينة إثبات التحويل — الطلب #{rid}\nالمبلغ الذي سيظهر للمستخدم: {egp_text} جنيه مصري\n\nراجع الصورة والمبلغ. لن يصل شيء للمستخدم إلا بعد الضغط على «إرسال للمستخدم».")
+            return await m.reply_photo(m.photo[-1].file_id,caption=caption,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إرسال للمستخدم",callback_data=f"payout_send:{rid}"),InlineKeyboardButton("إلغاء",callback_data=f"payout_cancel:{rid}")]]))
     if step=="payout_photo":
-        if not is_admin(user.id):
-            return
-        rid=ctx.user_data.get("payout_rid")
-        if not m.photo:
-            return await m.reply_text("أرسل صورة التحويل كصورة داخل تيليجرام، وليس كملف أو فيديو. لم يتم إرسال تأكيد الدفع للمستخدم بعد.")
-        with db() as c:
-            r=c.execute("SELECT * FROM requests WHERE id=?",(rid,)).fetchone()
-        if not r or r["status"]!="approved":
-            ctx.user_data.clear()
-            return await m.reply_text("الطلب غير موجود أو لم يتم تأكيده. افتح الطلب من لوحة الإدارة وراجعه من جديد.")
-        usd=float(r["amount"] or 0)
-        egp=usd*50
-        egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
-        caption=(f"✅ تم دفع المبلغ المستحق وقدره: {egp_text} جنيه مصري.\n\n"
-                 "📎 مرفق لحضرتك إثبات التحويل.\n\n"
-                 "كان معكم الإمبراطور للسحب والشحن.\n"
-                 "لو في أي مشكلة أو استفسار، يُرجى التواصل مع الدعم.")
-        try:
-            await ctx.bot.send_photo(r["user_id"],m.photo[-1].file_id,caption=caption)
-        except Exception as e:
-            log.exception("Could not send payout proof to user for request %s: %s",rid,e)
-            return await m.reply_text("تعذر إرسال الإثبات للمستخدم. لم يتم تسجيل الدفع كمكتمل. تأكد أن المستخدم بدأ البوت ولم يحظرك، ثم أعد المحاولة.")
-        with db() as c:
-            c.execute("UPDATE requests SET payout_photo=?,payout_sent_at=? WHERE id=? AND status='approved'",(m.photo[-1].file_id,now(),rid))
-        audit(user.id,"payout_proof_sent",f"#{rid}")
-        ctx.user_data.clear()
-        return await m.reply_text(f"تم إرسال صورة إثبات التحويل ورسالة تأكيد الدفع للمستخدم بنجاح للطلب #{rid}.",reply_markup=admin_kb())
+        ctx.user_data.pop("step",None); ctx.user_data.pop("payout_rid",None)
+        return await m.reply_text("افتح الطلب المعتمد واضغط «رفع صورة إثبات التحويل»، ثم ردّ على رسالة الطلب بالصورة.")
     if step=="reject":
         if not is_admin(user.id): return
         rid=ctx.user_data.get("rid"); ctx.user_data.clear()
