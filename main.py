@@ -37,6 +37,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,amount TEXT,photo TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT);
         CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
         CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,added_by INTEGER,added_at TEXT);
+        CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY,blocked_by INTEGER NOT NULL,blocked_at TEXT NOT NULL,reason TEXT DEFAULT '');
         CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT,actor INTEGER,action TEXT,details TEXT,created_at TEXT);
         """)
         for i in range(1,11):
@@ -54,6 +55,8 @@ def admins():
     with db() as c: return [r[0] for r in c.execute("SELECT user_id FROM admins")]
 def is_admin(uid): return uid in admins()
 def owner(uid): return uid == OWNER
+def is_blocked(uid):
+    with db() as c: return c.execute("SELECT 1 FROM user_blocks WHERE user_id=?",(uid,)).fetchone() is not None
 def audit(uid, action, details=""):
     with db() as c: c.execute("INSERT INTO activity(actor,action,details,created_at) VALUES(?,?,?,?)",(uid,action,details[:500],now()))
 def get_programs(active=False):
@@ -79,6 +82,8 @@ async def edit(q,text,kb=None):
 async def start(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("لحماية بياناتك، استخدم البوت في المحادثة الخاصة فقط.")
+    if is_blocked(u.effective_user.id) and not is_admin(u.effective_user.id):
+        return await u.message.reply_text("لا يمكنك استخدام البوت حاليًا. تواصل مع الإدارة.")
     ctx.user_data.clear()
     await u.message.reply_text("أهلًا بك. اختر البرنامج المطلوب، ثم أدخل رقم المحفظة والمبلغ وأرسل صورة إثبات التحويل.",reply_markup=home_kb(u.effective_user.id))
 async def admin_cmd(u,ctx):
@@ -168,6 +173,8 @@ async def callbacks(u,ctx):
         return await q.answer("استخدم البوت في الخاص فقط لحماية البيانات.", show_alert=True)
     if d=="noop": return
     if d.startswith("p:"):
+        if is_blocked(uid) and not is_admin(uid):
+            return await edit(q,"لا يمكنك استخدام البوت حاليًا. تواصل مع الإدارة.")
         pid=int(d.split(":")[1])
         with db() as c: p=c.execute("SELECT * FROM programs WHERE id=? AND enabled=1",(pid,)).fetchone()
         if not p: return await edit(q,"البرنامج غير متاح.",home_kb())
@@ -234,17 +241,42 @@ async def callbacks(u,ctx):
         with db() as c: c.execute("DELETE FROM admins WHERE user_id=?",(target,))
         audit(uid,"admin_removed",str(target))
         return await edit(q,"تم حذف المشرف.",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع",callback_data="a:admins")]]))
-    if d=="a:users":
-        with db() as c: rs=c.execute("SELECT user_id,MAX(username) username,COUNT(*) n FROM requests GROUP BY user_id ORDER BY MAX(id) DESC LIMIT 20").fetchall()
-        kb=[[InlineKeyboardButton(f"{r['username'] and '@'+r['username'] or str(r['user_id'])} · {r['n']} طلب",callback_data=f"userdetail:{r['user_id']}")] for r in rs]
-        kb.append([InlineKeyboardButton("رجوع",callback_data="a:home")])
-        return await edit(q,"المستخدمون",InlineKeyboardMarkup(kb))
+    if d.startswith("a:users"):
+        page=int(d.split(":")[2]) if d.count(":")>=2 else 0
+        with db() as c:
+            rs=c.execute("SELECT r.user_id,MAX(r.username) username,MAX(r.full_name) full_name,COUNT(*) n,MAX(r.id) last_id FROM requests r GROUP BY r.user_id ORDER BY last_id DESC LIMIT 10 OFFSET ?",(page*10,)).fetchall()
+            total=c.execute("SELECT COUNT(DISTINCT user_id) FROM requests").fetchone()[0]
+        kb=[[InlineKeyboardButton(f"{(r['username'] and '@'+r['username']) or (r['full_name'] or str(r['user_id']))} · {r['n']} طلب",callback_data=f"userdetail:{r['user_id']}")] for r in rs]
+        nav=[]
+        if page>0: nav.append(InlineKeyboardButton("السابق",callback_data=f"a:users:{page-1}"))
+        if (page+1)*10<total: nav.append(InlineKeyboardButton("التالي",callback_data=f"a:users:{page+1}"))
+        if nav: kb.append(nav)
+        kb.append([InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")])
+        return await edit(q,f"المستخدمون ({total}) — اختر مستخدمًا",InlineKeyboardMarkup(kb))
     if d.startswith("userdetail:"):
         target=int(d.split(":")[1])
-        with db() as c: rs=c.execute("SELECT id,program_name,amount,status FROM requests WHERE user_id=? ORDER BY id DESC LIMIT 20",(target,)).fetchall()
-        kb=[[InlineKeyboardButton(f"#{r['id']} · {LABELS[r['status']]}",callback_data=f"r:{r['id']}")] for r in rs]
+        with db() as c:
+            info=c.execute("SELECT user_id,MAX(username) username,MAX(full_name) full_name,COUNT(*) n FROM requests WHERE user_id=? GROUP BY user_id",(target,)).fetchone()
+            rs=c.execute("SELECT id,status FROM requests WHERE user_id=? ORDER BY id DESC LIMIT 10",(target,)).fetchall()
+            blocked=c.execute("SELECT 1 FROM user_blocks WHERE user_id=?",(target,)).fetchone() is not None
+        if not info: return await edit(q,"المستخدم غير موجود.",back_kb("a:users"))
+        kb=[[InlineKeyboardButton(f"الطلب #{r['id']} · {LABELS[r['status']]}",callback_data=f"r:{r['id']}")] for r in rs]
+        if blocked:
+            kb.append([InlineKeyboardButton("رفع الحظر",callback_data=f"userunblock:{target}")])
+        else:
+            kb.append([InlineKeyboardButton("حظر المستخدم",callback_data=f"userblock:{target}")])
         kb.append([InlineKeyboardButton("رجوع للمستخدمين",callback_data="a:users")])
-        return await edit(q,f"طلبات المستخدم {target}",InlineKeyboardMarkup(kb))
+        title=info["full_name"] or info["username"] or str(target)
+        return await edit(q,f"المستخدم: {title}\nTelegram ID: {target}\nعدد الطلبات: {info['n']}\nالحالة: {'محظور' if blocked else 'نشط'}\nاختر إجراءً:",InlineKeyboardMarkup(kb))
+    if d.startswith("userblock:") or d.startswith("userunblock:"):
+        target=int(d.split(":")[1]); block=d.startswith("userblock:")
+        with db() as c:
+            if block: c.execute("INSERT OR IGNORE INTO user_blocks(user_id,blocked_by,blocked_at,reason) VALUES(?,?,?,?)",(target,uid,now(),"حظر من لوحة الإدارة"))
+            else: c.execute("DELETE FROM user_blocks WHERE user_id=?",(target,))
+        audit(uid,"user_blocked" if block else "user_unblocked",str(target))
+        try: await ctx.bot.send_message(target,"تم تقييد استخدامك للبوت بواسطة الإدارة." if block else "تم رفع الحظر عن حسابك ويمكنك استخدام البوت مجددًا.")
+        except Exception: pass
+        return await edit(q,"تم "+("حظر المستخدم." if block else "رفع الحظر عن المستخدم."),InlineKeyboardMarkup([[InlineKeyboardButton("العودة لملف المستخدم",callback_data=f"userdetail:{target}")],[InlineKeyboardButton("قائمة المستخدمين",callback_data="a:users")],[InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]]))
     if d=="a:log":
         with db() as c: rs=c.execute("SELECT * FROM activity ORDER BY id DESC LIMIT 15").fetchall()
         return await edit(q,"آخر الأنشطة:\n"+"\n".join(f"#{r['id']} {r['action']} | {r['actor']} | {r['details']}" for r in rs),back_kb())
