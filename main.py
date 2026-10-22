@@ -88,8 +88,7 @@ async def start(u,ctx):
     with db() as c:
         c.execute("INSERT INTO bot_users(user_id,username,full_name,first_seen,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,last_seen=excluded.last_seen",(u.effective_user.id,u.effective_user.username,u.effective_user.full_name,now(),now()))
     ctx.user_data.clear()
-    welcome = (f"هلا بيك {u.effective_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "1. التارجت الخاص بك:\n123455789\n\n" + "2. سعر الصرف:\nالدولار = 50 جنيهًا مصريًا.\n\n" + "3. البيانات المطلوبة ⚡\n" + "• اسكرين شوت للتارجت الذي أرسلته.\n" + "• رقم الكاش الخاص بك.\n" + "• الـ ID الخاص بك.\n" + "• عدد الدولارات التي أرسلتها.\n\n" + "أرسل البيانات المطلوبة بدقة، ثم اختر البرنامج المطلوب من الأزرار بالأسفل.")
-    await u.message.reply_text(welcome,reply_markup=home_kb(u.effective_user.id))
+    await u.message.reply_text("أهلًا بك، اختر البرنامج المطلوب.",reply_markup=home_kb(u.effective_user.id))
 async def admin_cmd(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("لوحة الإدارة متاحة في الخاص فقط.")
@@ -182,8 +181,16 @@ async def callbacks(u,ctx):
         pid=int(d.split(":")[1])
         with db() as c: p=c.execute("SELECT * FROM programs WHERE id=? AND enabled=1",(pid,)).fetchone()
         if not p: return await edit(q,"البرنامج غير متاح.",home_kb())
-        ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"]}; ctx.user_data["step"]="wallet"
-        return await edit(q,f"الخطوة 1 من 4 — رقم المحفظة\nالبرنامج: {p['name']}\nالكود: {p['code']}\n\nأرسل رقم المحفظة المصرية التي حوّلت منها، مكوّنًا من 11 رقمًا ويبدأ بـ 01.\nمثال للشكل فقط: 01012345678\nلا ترسل أي كلمة مرور أو رمز تحقق.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء العملية",callback_data="ucancel")]]))
+        ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"]}; ctx.user_data["step"]="confirm_program"
+        welcome = (f"هلا بيك {q.from_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "التارجت الخاص بك: 123455789\n\n" + "سعر الصرف: الدولار = 50 جنيهًا مصريًا.")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("متابعة",callback_data="continue_request"),InlineKeyboardButton("لا",callback_data="ucancel")]])
+        return await edit(q,welcome,kb)
+    if d=="continue_request":
+        if ctx.user_data.get("step")!="confirm_program" or not ctx.user_data.get("draft"):
+            return await edit(q,"اختار البرنامج من القائمة أولًا.",home_kb(uid))
+        ctx.user_data["step"]="wallet"
+        checklist = ("• البيانات المطلوبة ⚡\n" + "• اسكرين شوت للتارجت الذي أرسلته.\n" + "• رقم الكاش الخاص بك.\n" + "• الـ ID الخاص بك.\n" + "• عدد الدولارات التي أرسلتها.")
+        return await edit(q,checklist + "\n\nابدأ بإرسال رقم الكاش الخاص بك.",InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء العملية",callback_data="ucancel")]]))
     if d=="ucancel": ctx.user_data.clear(); return await edit(q,"أهلًا بك، اختر البرنامج المطلوب.",home_kb(uid))
     if not is_admin(uid): return await q.answer("غير مصرح.",show_alert=True)
     if d=="a:home": return await edit(q,"لوحة تحكم الإدارة",admin_kb())
