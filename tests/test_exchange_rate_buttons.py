@@ -44,6 +44,23 @@ class PerProgramExchangeRateTests(unittest.IsolatedAsyncioTestCase):
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
         self.assertIn("pe:rate:1", callbacks)
 
+    async def test_customer_program_screen_shows_configured_program_id(self):
+        with main.db() as conn:
+            conn.execute("UPDATE programs SET code=? WHERE id=?", ("CLIENT-ID-987", 3))
+        q = SimpleNamespace(
+            data="p:3",
+            from_user=SimpleNamespace(id=555001, first_name="Test"),
+            message=SimpleNamespace(chat=SimpleNamespace(type="private"), chat_id=555001, reply_text=AsyncMock()),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        update = SimpleNamespace(callback_query=q)
+        context = SimpleNamespace(user_data={}, bot=SimpleNamespace(send_message=AsyncMock()))
+        await main.callbacks(update, context)
+        shown_text = q.edit_message_text.await_args.args[0]
+        self.assertIn("CLIENT-ID-987", shown_text)
+        self.assertNotIn("123455789", shown_text)
+
     async def test_rate_update_changes_only_selected_program(self):
         user = SimpleNamespace(id=123456, username="admin", full_name="Admin")
         message = SimpleNamespace(text="62.5", reply_text=AsyncMock())
