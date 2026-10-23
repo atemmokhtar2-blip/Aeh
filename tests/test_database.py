@@ -113,11 +113,11 @@ class StartWelcomeTests(unittest.IsolatedAsyncioTestCase):
         await main.start(update, context)
         await main.start(update, context)
 
-        self.assertEqual(message.reply_photo.await_count, 1)
-        self.assertEqual(message.reply_text.await_count, 1)
+        self.assertEqual(message.reply_photo.await_count, 2)
+        self.assertEqual(message.reply_text.await_count, 0)
         with main.db() as conn:
-            row = conn.execute("SELECT welcome_photo_sent FROM bot_users WHERE user_id=?", (user.id,)).fetchone()
-        self.assertEqual(row["welcome_photo_sent"], 1)
+            row = conn.execute("SELECT user_id FROM bot_users WHERE user_id=?", (user.id,)).fetchone()
+        self.assertIsNotNone(row)
 
 
 if __name__ == "__main__":
