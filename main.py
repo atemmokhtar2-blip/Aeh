@@ -219,7 +219,7 @@ async def callbacks(u,ctx):
         with db() as c: p=c.execute("SELECT * FROM programs WHERE id=? AND enabled=1",(pid,)).fetchone()
         if not p: return await edit(q,"البرنامج غير متاح.",home_kb())
         ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"]}; ctx.user_data["step"]="confirm_program"
-        welcome = (f"هلا بيك {q.from_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "التارجت الخاص بك: 123455789\n\n" + "سعر الصرف: الدولار = 50 جنيهًا مصريًا.")
+        welcome = (f"هلا بيك {q.from_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "ارسل التارجت الخاص بك للوكالة.\n\n" + "التارجت الخاص بك: 123455789\n\n" + "سعر الصرف: الدولار = 50 جنيهًا مصريًا.")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("متابعة",callback_data="continue_request"),InlineKeyboardButton("لا",callback_data="ucancel")]])
         return await edit(q,welcome,kb)
     if d=="continue_request":
