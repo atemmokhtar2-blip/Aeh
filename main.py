@@ -307,7 +307,7 @@ async def callbacks(u,ctx):
         pid=int(d.split(":")[1])
         with db() as c: c.execute("UPDATE programs SET enabled=1-enabled WHERE id=?",(pid,))
         audit(uid,"program_toggle",str(pid)); return await callbacks_proxy_programs(q)
-    if d.startswith("pe:"):
+    if d.startswith("pe:") and d.count(":")==1:
         pid=int(d.split(":")[1])
         with db() as c: p=c.execute("SELECT id,name,code FROM programs WHERE id=?",(pid,)).fetchone()
         if not p: return await edit(q,"البرنامج غير موجود.",back_kb("a:programs"))
@@ -490,15 +490,21 @@ async def messages(u,ctx):
         if not pid: ctx.user_data.clear(); return await m.reply_text("انتهت جلسة التعديل. افتح إدارة البرامج وحاول مرة أخرى.",reply_markup=admin_kb())
         if step=="editprogram_name":
             value=value[:80]
-            with db() as c: c.execute("UPDATE programs SET name=? WHERE id=?",(value,pid))
-            action="program_name_updated"; label="اسم البرنامج"
+            with db() as c:
+                c.execute("UPDATE programs SET name=? WHERE id=?",(value,pid))
+                p=c.execute("SELECT name,code FROM programs WHERE id=?",(pid,)).fetchone()
+            action="program_name_updated"
+            confirmation=f"تم تغيير اسم البرنامج رقم {pid} بنجاح.\\n\\nالاسم الجديد: {p['name']}\\nID البرنامج: {p['code']}"
         else:
             value=value[:200]
-            with db() as c: c.execute("UPDATE programs SET code=? WHERE id=?",(value,pid))
-            action="program_id_updated"; label="ID البرنامج"
+            with db() as c:
+                c.execute("UPDATE programs SET code=? WHERE id=?",(value,pid))
+                p=c.execute("SELECT name,code FROM programs WHERE id=?",(pid,)).fetchone()
+            action="program_id_updated"
+            confirmation=f"تم تغيير ID البرنامج رقم {pid} بنجاح.\\n\\nاسم البرنامج: {p['name']}\\nالـ ID الجديد: {p['code']}"
         ctx.user_data.clear()
         audit(user.id,action,f"{pid}: {value}")
-        return await m.reply_text(f"تم تحديث {label} للبرنامج رقم {pid} بنجاح.",reply_markup=InlineKeyboardMarkup([
+        return await m.reply_text(confirmation,reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs")],
             [InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]
         ]))
