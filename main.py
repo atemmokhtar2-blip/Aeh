@@ -106,6 +106,8 @@ def home_kb(uid=None):
     ps=get_programs(True); rows=[]
     for i in range(0,len(ps),2): rows.append([InlineKeyboardButton(p["name"],callback_data=f"p:{p['id']}") for p in ps[i:i+2]])
     if not rows: rows=[[InlineKeyboardButton("لا توجد برامج متاحة",callback_data="noop")]]
+    # Full-width URL button opens the client charging platform directly.
+    rows.append([InlineKeyboardButton("منصة الإمبراطور للشحن",url="https://Embrator.store")])
     if uid is not None and is_admin(uid): rows.append([InlineKeyboardButton("لوحة الإدارة",callback_data="a:home")])
     return InlineKeyboardMarkup(rows)
 def admin_kb():
