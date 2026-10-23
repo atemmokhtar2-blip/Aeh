@@ -208,11 +208,12 @@ async def decide(q,ctx,rid,status,reason=""):
         c.execute("UPDATE requests SET status=?,reviewed_at=?,reviewer_id=?,reason=? WHERE id=? AND status='pending'",(status,now(),uid,reason,rid))
     audit(uid,"request_"+status,f"#{rid} {reason}")
     if status=="approved":
+        rate=get_exchange_rate()
         usd=float(r["amount"] or 0)
-        egp=usd*50
-        egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
+        egp=usd*rate
+        egp_text=money_text(egp)
         kb=InlineKeyboardMarkup([[InlineKeyboardButton("رفع صورة إثبات التحويل",callback_data=f"payout_upload:{rid}")],[InlineKeyboardButton("عرض الطلب",callback_data=f"r:{rid}")]])
-        await edit(q,f"تم تأكيد وصول الدولارات للوكالة للطلب #{rid}.\n\nالمبلغ المستحق: {egp_text} جنيه مصري (سعر الصرف 50 جنيهًا للدولار).\nحوّل المبلغ للمستخدم من خارج البوت، ثم اضغط «رفع صورة إثبات التحويل». ستظهر لك معاينة للصورة قبل إرسالها للمستخدم.",kb)
+        await edit(q,f"تم تأكيد وصول الدولارات للوكالة للطلب #{rid}.\n\nالمبلغ المستحق: {egp_text} جنيه مصري (سعر الصرف {money_text(rate)} جنيه للدولار).\nحوّل المبلغ للمستخدم من خارج البوت، ثم اضغط «رفع صورة إثبات التحويل». ستظهر لك معاينة للصورة قبل إرسالها للمستخدم.",kb)
         try: await ctx.bot.send_message(r["user_id"],f"تم تأكيد وصول الدولارات الخاصة بطلبك رقم #{rid}. طلبك الآن في مرحلة تحويل المبلغ بالجنيه المصري، وسيصلك إثبات التحويل بعد إتمام الدفع.")
         except Exception: pass
         return
