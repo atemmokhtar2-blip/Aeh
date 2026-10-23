@@ -5,6 +5,7 @@ Telegram bot for a configurable 10-program menu, user-submitted wallet/payment p
 ## Features
 - Ten editable program slots (name, code, enabled/disabled).
 - User flow: choose program → view configured code → submit wallet number → submit amount → upload proof image.
+- The welcome image is sent once per user on their first `/start`; later `/start` messages show the menu without repeating the image.
 - Admin notifications with proof photo and inline **Approve**, **Reject**, and **Reopen** actions.
 - Admin dashboard, request filters, user lookup, basic statistics, program management, admin management, activity log, duplicate-request warnings, and CSV export.
 - SQLite persistence; pending requests are not lost when the process restarts.

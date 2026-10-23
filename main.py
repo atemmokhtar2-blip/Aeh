@@ -12,6 +12,7 @@ INITIAL_ADMINS = set(ADMIN_ID_ORDER)
 OWNER_RAW = os.getenv("OWNER_ID", "").strip()
 OWNER = int(OWNER_RAW) if OWNER_RAW.isdigit() else (ADMIN_ID_ORDER[0] if ADMIN_ID_ORDER else None)
 DB_PATH = os.getenv("DB_PATH", "aeh.sqlite3")
+WELCOME_PHOTO_PATH = Path(__file__).resolve().parent / "assets" / "welcome.jpg"
 LABELS = {"pending": "قيد المراجعة", "approved": "مقبول", "rejected": "مرفوض"}
 
 def now():
@@ -40,7 +41,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
         CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,added_by INTEGER,added_at TEXT);
         CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY,blocked_by INTEGER NOT NULL,blocked_at TEXT NOT NULL,reason TEXT DEFAULT '');
-        CREATE TABLE IF NOT EXISTS bot_users(user_id INTEGER PRIMARY KEY,username TEXT,full_name TEXT,first_seen TEXT NOT NULL,last_seen TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS bot_users(user_id INTEGER PRIMARY KEY,username TEXT,full_name TEXT,first_seen TEXT NOT NULL,last_seen TEXT NOT NULL,welcome_photo_sent INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT,actor INTEGER,action TEXT,details TEXT,created_at TEXT);
         """)
         # Migrate existing databases without losing previously saved requests.
@@ -51,6 +52,9 @@ def init_db():
             c.execute("ALTER TABLE requests ADD COLUMN payout_photo TEXT")
         if "payout_sent_at" not in request_columns:
             c.execute("ALTER TABLE requests ADD COLUMN payout_sent_at TEXT")
+        user_columns = {row["name"] for row in c.execute("PRAGMA table_info(bot_users)")}
+        if "welcome_photo_sent" not in user_columns:
+            c.execute("ALTER TABLE bot_users ADD COLUMN welcome_photo_sent INTEGER NOT NULL DEFAULT 0")
         for i in range(1,11):
             c.execute("INSERT OR IGNORE INTO programs VALUES(?,?,?,1)",(i,f"برنامج {i:02d}","لم يحدد الكود بعد"))
         # Seed configured admins only on first database initialization. Do not
@@ -96,9 +100,23 @@ async def start(u,ctx):
     if is_blocked(u.effective_user.id) and not is_admin(u.effective_user.id):
         return await u.message.reply_text("لا يمكنك استخدام البوت حاليًا. تواصل مع الإدارة.")
     with db() as c:
+        row=c.execute("SELECT welcome_photo_sent FROM bot_users WHERE user_id=?",(u.effective_user.id,)).fetchone()
         c.execute("INSERT INTO bot_users(user_id,username,full_name,first_seen,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,last_seen=excluded.last_seen",(u.effective_user.id,u.effective_user.username,u.effective_user.full_name,now(),now()))
+        send_welcome_photo = not row or not row["welcome_photo_sent"]
     ctx.user_data.clear()
-    await u.message.reply_text("أهلًا بك، اختر البرنامج المطلوب.",reply_markup=home_kb(u.effective_user.id))
+    greeting="أهلًا بك، اختر البرنامج المطلوب."
+    keyboard=home_kb(u.effective_user.id)
+    if send_welcome_photo:
+        try:
+            with WELCOME_PHOTO_PATH.open("rb") as photo:
+                await u.message.reply_photo(photo=photo,caption=greeting,reply_markup=keyboard)
+        except Exception:
+            log.exception("Welcome photo could not be sent to user %s",u.effective_user.id)
+            return await u.message.reply_text(greeting,reply_markup=keyboard)
+        with db() as c:
+            c.execute("UPDATE bot_users SET welcome_photo_sent=1 WHERE user_id=?",(u.effective_user.id,))
+        return
+    await u.message.reply_text(greeting,reply_markup=keyboard)
 async def admin_cmd(u,ctx):
     if not u.effective_chat or u.effective_chat.type != "private":
         return await u.effective_message.reply_text("لوحة الإدارة متاحة في الخاص فقط.")
