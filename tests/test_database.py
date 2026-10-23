@@ -79,6 +79,17 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(row["details"], "unit test")
 
 
+    def test_home_menu_has_full_width_emperor_platform_url_button(self):
+        keyboard = main.home_kb(654321)
+        platform_rows = [
+            row for row in keyboard.inline_keyboard
+            if len(row) == 1
+            and row[0].text == "منصة الإمبراطور للشحن"
+        ]
+        self.assertEqual(len(platform_rows), 1)
+        self.assertEqual(platform_rows[0][0].url, "https://Embrator.store")
+        self.assertIsNone(platform_rows[0][0].callback_data)
+
 class StartWelcomeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
