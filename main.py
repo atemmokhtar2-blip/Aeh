@@ -517,7 +517,7 @@ async def messages(u,ctx):
             return await m.reply_text("غير مصرح.")
         raw=(m.text or "").strip()
         import re
-        if not re.fullmatch(r"(?:[0-9]{1,6})(?:\\.[0-9]{1,4})?",raw):
+        if not re.fullmatch(r"(?:[0-9]{1,6})(?:[.][0-9]{1,4})?",raw):
             return await m.reply_text("السعر غير صحيح. أرسل أرقامًا فقط، مع نقطة عشرية اختيارية وبحد أقصى 4 منازل. أمثلة صحيحة: 50 أو 50.25 أو 49.875")
         from decimal import Decimal, InvalidOperation
         try: rate=Decimal(raw)
