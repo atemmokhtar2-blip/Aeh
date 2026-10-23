@@ -248,7 +248,7 @@ async def callbacks(u,ctx):
         if not p: return await edit(q,"البرنامج غير متاح.",home_kb())
         ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"],"exchange_rate":float(p["exchange_rate"] or 50)}; ctx.user_data["step"]="confirm_program"
         rate=float(ctx.user_data["draft"].get("exchange_rate",50))
-        welcome = (f"هلا بيك {q.from_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "ارسل التارجت الخاص بك للوكالة.\n\n" + "التارجت الخاص بك: 123455789\n\n" + f"سعر الصرف الخاص بهذا البرنامج: الدولار = {money_text(rate)} جنيه مصري.")
+        welcome = (f"هلا بيك {q.from_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "ارسل التارجت الخاص بك للوكالة.\n\n" + f"التارجت الخاص بك: {p['code'] or 'لم يحدد الكود بعد'}\n\n" + f"سعر الصرف الخاص بهذا البرنامج: الدولار = {money_text(rate)} جنيه مصري.")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("متابعة",callback_data="continue_request"),InlineKeyboardButton("لا",callback_data="ucancel")]])
         return await edit(q,welcome,kb)
     if d=="continue_request":
