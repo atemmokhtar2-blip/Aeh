@@ -301,6 +301,42 @@ async def callbacks(u,ctx):
             try: await ctx.bot.send_message(r["user_id"],f"أعيد طلبك #{rid} للمراجعة.")
             except Exception: pass
         return await request_detail(q,rid)
+    if d in ("program_edit_confirm","program_edit_cancel"):
+        if not is_admin(uid): return await q.answer("غير مصرح.",show_alert=True)
+        step=ctx.user_data.get("step")
+        pid=ctx.user_data.get("pid")
+        value=ctx.user_data.get("pending_program_value")
+        if d=="program_edit_cancel":
+            ctx.user_data.pop("pending_program_value",None)
+            ctx.user_data.pop("step",None)
+            ctx.user_data.pop("pid",None)
+            return await edit(q,"تم إلغاء التعديل. لم يتم تغيير أي بيانات.",InlineKeyboardMarkup([
+                [InlineKeyboardButton("إعدادات البرنامج",callback_data=f"pe:{pid}")] if pid else [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs")],
+                [InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]
+            ]))
+        if step not in ("confirm_program_edit_name","confirm_program_edit_code") or not pid or value is None:
+            ctx.user_data.pop("pending_program_value",None)
+            ctx.user_data.pop("step",None)
+            ctx.user_data.pop("pid",None)
+            return await edit(q,"انتهت جلسة التعديل. افتح إدارة البرامج وحاول مرة أخرى.",admin_kb())
+        if step=="confirm_program_edit_name":
+            with db() as c:
+                c.execute("UPDATE programs SET name=? WHERE id=?",(value,pid))
+                p=c.execute("SELECT name,code FROM programs WHERE id=?",(pid,)).fetchone()
+            action="program_name_updated"
+            confirmation=f"تم تأكيد تغيير اسم البرنامج رقم {pid}.\\n\\nالاسم الجديد: {p['name']}\\nID البرنامج: {p['code']}"
+        else:
+            with db() as c:
+                c.execute("UPDATE programs SET code=? WHERE id=?",(value,pid))
+                p=c.execute("SELECT name,code FROM programs WHERE id=?",(pid,)).fetchone()
+            action="program_id_updated"
+            confirmation=f"تم تأكيد تغيير ID البرنامج رقم {pid}.\\n\\nاسم البرنامج: {p['name']}\\nالـ ID الجديد: {p['code']}"
+        ctx.user_data.clear()
+        audit(uid,action,f"{pid}: {value}")
+        return await edit(q,confirmation,InlineKeyboardMarkup([
+            [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs")],
+            [InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]
+        ]))
     if d=="a:programs":
         return await callbacks_proxy_programs(q)
     if d.startswith("pt:"):
@@ -488,25 +524,14 @@ async def messages(u,ctx):
         if not value: return await m.reply_text("القيمة لا يمكن أن تكون فارغة. أرسل قيمة صحيحة.")
         pid=ctx.user_data.get("pid")
         if not pid: ctx.user_data.clear(); return await m.reply_text("انتهت جلسة التعديل. افتح إدارة البرامج وحاول مرة أخرى.",reply_markup=admin_kb())
-        if step=="editprogram_name":
-            value=value[:80]
-            with db() as c:
-                c.execute("UPDATE programs SET name=? WHERE id=?",(value,pid))
-                p=c.execute("SELECT name,code FROM programs WHERE id=?",(pid,)).fetchone()
-            action="program_name_updated"
-            confirmation=f"تم تغيير اسم البرنامج رقم {pid} بنجاح.\\n\\nالاسم الجديد: {p['name']}\\nID البرنامج: {p['code']}"
-        else:
-            value=value[:200]
-            with db() as c:
-                c.execute("UPDATE programs SET code=? WHERE id=?",(value,pid))
-                p=c.execute("SELECT name,code FROM programs WHERE id=?",(pid,)).fetchone()
-            action="program_id_updated"
-            confirmation=f"تم تغيير ID البرنامج رقم {pid} بنجاح.\\n\\nاسم البرنامج: {p['name']}\\nالـ ID الجديد: {p['code']}"
-        ctx.user_data.clear()
-        audit(user.id,action,f"{pid}: {value}")
-        return await m.reply_text(confirmation,reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs")],
-            [InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]
+        is_name=step=="editprogram_name"
+        value=value[:80] if is_name else value[:200]
+        ctx.user_data["pending_program_value"]=value
+        ctx.user_data["step"]="confirm_program_edit_name" if is_name else "confirm_program_edit_code"
+        label="اسم البرنامج" if is_name else "ID البرنامج"
+        prompt=f"هل تريد تأكيد تغيير {label} للبرنامج رقم {pid}؟\\n\\nالقيمة الجديدة: {value}\\n\\nلن يتم الحفظ إلا بعد الضغط على «تأكيد»."
+        return await m.reply_text(prompt,reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("تأكيد",callback_data="program_edit_confirm"),InlineKeyboardButton("إلغاء",callback_data="program_edit_cancel")]
         ]))
     if step=="proof":
         if not m.photo:
