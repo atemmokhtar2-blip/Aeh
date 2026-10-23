@@ -287,24 +287,33 @@ async def callbacks(u,ctx):
             except Exception: pass
         return await request_detail(q,rid)
     if d=="a:programs":
-        rows=get_programs(); kb=[]
-        for p in rows: kb.append([InlineKeyboardButton(f"{p['id']}. {p['name']} ({'مفعّل' if p['enabled'] else 'متوقف'})",callback_data=f"pe:{p['id']}"),InlineKeyboardButton("إيقاف" if p["enabled"] else "تفعيل",callback_data=f"pt:{p['id']}")])
-        kb.append([InlineKeyboardButton("رجوع",callback_data="a:home")])
-        kb.append([InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")])
-        return await edit(q,"إدارة البرامج. اضغط الاسم لتعديله، أو استخدم /setprogram رقم | الاسم | الكود.",InlineKeyboardMarkup(kb))
+        return await callbacks_proxy_programs(q)
     if d.startswith("pt:"):
         pid=int(d.split(":")[1])
         with db() as c: c.execute("UPDATE programs SET enabled=1-enabled WHERE id=?",(pid,))
         audit(uid,"program_toggle",str(pid)); return await callbacks_proxy_programs(q)
     if d.startswith("pe:"):
-        ctx.user_data["pid"]=int(d.split(":")[1])
-        return await edit(q,"اختر ترتيب إدخال بيانات البرنامج:",InlineKeyboardMarkup([[InlineKeyboardButton("الكود ثم الاسم",callback_data=f"peorder:code:{ctx.user_data['pid']}")],[InlineKeyboardButton("الاسم ثم الكود",callback_data=f"peorder:name:{ctx.user_data['pid']}")],[InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],[InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")]]))
-    if d.startswith("peorder:"):
-        _, order, pid = d.split(":")
-        ctx.user_data["step"]="editprogram_code" if order=="code" else "editprogram_name"
-        ctx.user_data["pid"]=int(pid); ctx.user_data["edit_order"]=order
-        first="الكود" if order=="code" else "الاسم"
-        return await edit(q,f"أرسل {first} الجديد للبرنامج رقم {pid}.",InlineKeyboardMarkup([[InlineKeyboardButton("رجوع لاختيار الترتيب",callback_data=f"pe:{pid}")],[InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],[InlineKeyboardButton("إلغاء",callback_data="a:home")]]))
+        pid=int(d.split(":")[1])
+        with db() as c: p=c.execute("SELECT id,name,code FROM programs WHERE id=?",(pid,)).fetchone()
+        if not p: return await edit(q,"البرنامج غير موجود.",back_kb("a:programs"))
+        kb=InlineKeyboardMarkup([
+            [InlineKeyboardButton("تغيير اسم البرنامج",callback_data=f"pe:name:{pid}")],
+            [InlineKeyboardButton("تغيير ID البرنامج",callback_data=f"pe:code:{pid}")],
+            [InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],
+            [InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")]
+        ])
+        return await edit(q,f"إعدادات البرنامج رقم {pid}\nالاسم الحالي: {p['name']}\nالـ ID الحالي: {p['code']}\n\nاختر ما تريد تغييره:",kb)
+    if d.startswith("pe:name:") or d.startswith("pe:code:"):
+        _, _, pid = d.split(":")
+        pid=int(pid); field="name" if d.startswith("pe:name:") else "code"
+        ctx.user_data["step"]="editprogram_name" if field=="name" else "editprogram_code"
+        ctx.user_data["pid"]=pid
+        prompt="الاسم الجديد" if field=="name" else "الـ ID الجديد"
+        return await edit(q,f"أرسل {prompt} للبرنامج رقم {pid}.",InlineKeyboardMarkup([
+            [InlineKeyboardButton("رجوع لإعدادات البرنامج",callback_data=f"pe:{pid}")],
+            [InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],
+            [InlineKeyboardButton("إلغاء",callback_data="a:home")]
+        ]))
     if d=="a:stats":
         with db() as c:
             total=c.execute("SELECT COUNT(*) FROM requests").fetchone()[0]; pending=c.execute("SELECT COUNT(*) FROM requests WHERE status='pending'").fetchone()[0]; ok=c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]; no=c.execute("SELECT COUNT(*) FROM requests WHERE status='rejected'").fetchone()[0]; users=c.execute("SELECT COUNT(DISTINCT user_id) FROM requests").fetchone()[0]
@@ -383,7 +392,7 @@ async def callbacks_proxy_programs(q):
     rows=get_programs(); kb=[]
     for p in rows: kb.append([InlineKeyboardButton(f"{p['id']}. {p['name']} ({'مفعّل' if p['enabled'] else 'متوقف'})",callback_data=f"pe:{p['id']}"),InlineKeyboardButton("إيقاف" if p["enabled"] else "تفعيل",callback_data=f"pt:{p['id']}")])
     kb.append([InlineKeyboardButton("رجوع",callback_data="a:home")])
-    await edit(q,"إدارة البرامج. /setprogram رقم | الاسم | الكود",InlineKeyboardMarkup(kb))
+    await edit(q,"إدارة البرامج — اختر البرنامج، ثم استخدم زر تغيير الاسم أو زر تغيير الـ ID. لكل برنامج ID مستقل.",InlineKeyboardMarkup(kb))
 async def messages(u,ctx):
     m=u.effective_message; user=u.effective_user; step=ctx.user_data.get("step")
     if not m or not user: return
@@ -429,24 +438,26 @@ async def messages(u,ctx):
         try: await ctx.bot.send_message(r["user_id"],f"تم رفض طلبك #{rid}. السبب: {m.text or 'بدون سبب'}\n\nللاستفسار، تواصل مع خدمة العملاء: 01286591021")
         except Exception: pass
         return await m.reply_text(f"تم رفض الطلب #{rid}.",reply_markup=admin_kb())
-    if step in ("editprogram_code","editprogram_name","editprogram_second"):
+    if step in ("editprogram_code","editprogram_name"):
         if not is_admin(user.id): return
         value=(m.text or "").strip()
-        if not value: return await m.reply_text("أرسل قيمة نصية غير فارغة.")
-        order=ctx.user_data.get("edit_order","name")
-        if step!="editprogram_second":
-            ctx.user_data["edit_first_value"]=value
-            ctx.user_data["step"]="editprogram_second"
-            second="الاسم" if order=="code" else "الكود"
-            return await m.reply_text(f"تم استلام القيمة الأولى. أرسل {second} الآن.")
-        first=ctx.user_data.get("edit_first_value","").strip()
+        if not value: return await m.reply_text("القيمة لا يمكن أن تكون فارغة. أرسل قيمة صحيحة.")
         pid=ctx.user_data.get("pid")
-        if order=="code": code,name=first,value
-        else: name,code=first,value
-        if not name or not code: return await m.reply_text("الاسم والكود مطلوبان. أعد إدخال البيانات.")
+        if not pid: ctx.user_data.clear(); return await m.reply_text("انتهت جلسة التعديل. افتح إدارة البرامج وحاول مرة أخرى.",reply_markup=admin_kb())
+        if step=="editprogram_name":
+            value=value[:80]
+            with db() as c: c.execute("UPDATE programs SET name=? WHERE id=?",(value,pid))
+            action="program_name_updated"; label="اسم البرنامج"
+        else:
+            value=value[:200]
+            with db() as c: c.execute("UPDATE programs SET code=? WHERE id=?",(value,pid))
+            action="program_id_updated"; label="ID البرنامج"
         ctx.user_data.clear()
-        with db() as c: c.execute("UPDATE programs SET name=?,code=? WHERE id=?",(name[:80],code[:200],pid))
-        audit(user.id,"program_updated",str(pid)); return await m.reply_text("تم تحديث اسم البرنامج والكود بنجاح.",reply_markup=admin_kb())
+        audit(user.id,action,f"{pid}: {value}")
+        return await m.reply_text(f"تم تحديث {label} للبرنامج رقم {pid} بنجاح.",reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs")],
+            [InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]
+        ]))
     if step=="proof":
         if not m.photo:
             return await m.reply_text("الخطوة 1 من 4 — مطلوب اسكرين شوت التارجت. أرسل الصورة كصورة داخل تيليجرام، وليس كملف أو فيديو أو ملصق.")
