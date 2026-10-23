@@ -479,7 +479,7 @@ async def messages(u,ctx):
         ctx.user_data.clear()
         audit(user.id,"admin_added",str(target))
         return await m.reply_text("تمت إضافة المشرف." if target not in [] else "تمت إضافة المشرف.",reply_markup=admin_kb())
-    if m.photo and m.reply_to_message:
+    if getattr(m, "photo", None) and getattr(m, "reply_to_message", None):
         with db() as c: prompt=c.execute("SELECT request_id FROM payout_prompts WHERE admin_id=? AND prompt_message_id=?",(user.id,m.reply_to_message.message_id)).fetchone()
         if prompt:
             rid=prompt["request_id"]
