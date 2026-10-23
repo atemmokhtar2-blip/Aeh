@@ -34,9 +34,9 @@ def db():
 def init_db():
     with db() as c:
         c.executescript("""
-        CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1,exchange_rate TEXT NOT NULL DEFAULT '50');
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,customer_id TEXT,amount TEXT,photo TEXT,payout_photo TEXT,payout_sent_at TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT);
+        CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,customer_id TEXT,amount TEXT,photo TEXT,payout_photo TEXT,payout_sent_at TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id INTEGER,reason TEXT,exchange_rate TEXT);
         CREATE TABLE IF NOT EXISTS payout_prompts(admin_id INTEGER NOT NULL,prompt_message_id INTEGER NOT NULL,request_id INTEGER NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(admin_id,prompt_message_id));
         CREATE TABLE IF NOT EXISTS payout_drafts(request_id INTEGER NOT NULL,admin_id INTEGER NOT NULL,photo TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(request_id,admin_id));
         CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
@@ -53,11 +53,16 @@ def init_db():
             c.execute("ALTER TABLE requests ADD COLUMN payout_photo TEXT")
         if "payout_sent_at" not in request_columns:
             c.execute("ALTER TABLE requests ADD COLUMN payout_sent_at TEXT")
+        if "exchange_rate" not in request_columns:
+            c.execute("ALTER TABLE requests ADD COLUMN exchange_rate TEXT")
+        program_columns = {row["name"] for row in c.execute("PRAGMA table_info(programs)")}
+        if "exchange_rate" not in program_columns:
+            c.execute("ALTER TABLE programs ADD COLUMN exchange_rate TEXT NOT NULL DEFAULT '50'")
         user_columns = {row["name"] for row in c.execute("PRAGMA table_info(bot_users)")}
         if "welcome_photo_sent" not in user_columns:
             c.execute("ALTER TABLE bot_users ADD COLUMN welcome_photo_sent INTEGER NOT NULL DEFAULT 0")
         for i in range(1,11):
-            c.execute("INSERT OR IGNORE INTO programs VALUES(?,?,?,1)",(i,f"برنامج {i:02d}","لم يحدد الكود بعد"))
+            c.execute("INSERT OR IGNORE INTO programs(id,name,code,enabled,exchange_rate) VALUES(?,?,?,1,'50')",(i,f"برنامج {i:02d}","لم يحدد الكود بعد"))
         c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('exchange_rate','50')")
         # Seed configured admins only on first database initialization. Do not
         # re-add deleted admins on every restart.
@@ -86,6 +91,15 @@ def get_exchange_rate():
         return rate if rate > 0 else 50.0
     except (TypeError,ValueError):
         return 50.0
+def get_program_rate(program_id):
+    with db() as c:
+        row=c.execute("SELECT exchange_rate FROM programs WHERE id=?",(program_id,)).fetchone()
+    try:
+        rate=float(row["exchange_rate"]) if row and row["exchange_rate"] else 50.0
+        return rate if rate > 0 else 50.0
+    except (TypeError,ValueError):
+        return 50.0
+
 def money_text(value):
     return f"{value:,.2f}".rstrip("0").rstrip(".")
 def home_kb(uid=None):
@@ -208,7 +222,7 @@ async def decide(q,ctx,rid,status,reason=""):
         c.execute("UPDATE requests SET status=?,reviewed_at=?,reviewer_id=?,reason=? WHERE id=? AND status='pending'",(status,now(),uid,reason,rid))
     audit(uid,"request_"+status,f"#{rid} {reason}")
     if status=="approved":
-        rate=get_exchange_rate()
+        rate=float(r["exchange_rate"]) if r["exchange_rate"] else get_program_rate(r["program_id"])
         usd=float(r["amount"] or 0)
         egp=usd*rate
         egp_text=money_text(egp)
@@ -232,9 +246,9 @@ async def callbacks(u,ctx):
         pid=int(d.split(":")[1])
         with db() as c: p=c.execute("SELECT * FROM programs WHERE id=? AND enabled=1",(pid,)).fetchone()
         if not p: return await edit(q,"البرنامج غير متاح.",home_kb())
-        ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"]}; ctx.user_data["step"]="confirm_program"
-        rate=get_exchange_rate()
-        welcome = (f"هلا بيك {q.from_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "ارسل التارجت الخاص بك للوكالة.\n\n" + "التارجت الخاص بك: 123455789\n\n" + f"سعر الصرف: الدولار = {money_text(rate)} جنيه مصري.")
+        ctx.user_data.clear(); ctx.user_data["draft"]={"pid":pid,"name":p["name"],"code":p["code"],"exchange_rate":float(p["exchange_rate"] or 50)}; ctx.user_data["step"]="confirm_program"
+        rate=float(ctx.user_data["draft"].get("exchange_rate",50))
+        welcome = (f"هلا بيك {q.from_user.first_name or ''}، معك الإمبراطور للشحن والسحب.\n\n" + "ارسل التارجت الخاص بك للوكالة.\n\n" + "التارجت الخاص بك: 123455789\n\n" + f"سعر الصرف الخاص بهذا البرنامج: الدولار = {money_text(rate)} جنيه مصري.")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("متابعة",callback_data="continue_request"),InlineKeyboardButton("لا",callback_data="ucancel")]])
         return await edit(q,welcome,kb)
     if d=="continue_request":
@@ -345,22 +359,23 @@ async def callbacks(u,ctx):
         audit(uid,"program_toggle",str(pid)); return await callbacks_proxy_programs(q)
     if d.startswith("pe:") and d.count(":")==1:
         pid=int(d.split(":")[1])
-        with db() as c: p=c.execute("SELECT id,name,code FROM programs WHERE id=?",(pid,)).fetchone()
+        with db() as c: p=c.execute("SELECT id,name,code,exchange_rate FROM programs WHERE id=?",(pid,)).fetchone()
         if not p: return await edit(q,"البرنامج غير موجود.",back_kb("a:programs"))
         kb=InlineKeyboardMarkup([
             [InlineKeyboardButton("تغيير اسم البرنامج",callback_data=f"pe:name:{pid}")],
             [InlineKeyboardButton("تغيير ID البرنامج",callback_data=f"pe:code:{pid}")],
+            [InlineKeyboardButton("تغيير سعر الصرف",callback_data=f"pe:rate:{pid}")],
             [InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],
             [InlineKeyboardButton("رجوع للقائمة الرئيسية",callback_data="a:home")]
         ])
-        return await edit(q,f"إعدادات البرنامج رقم {pid}\nالاسم الحالي: {p['name']}\nالـ ID الحالي: {p['code']}\n\nاختر ما تريد تغييره:",kb)
-    if d.startswith("pe:name:") or d.startswith("pe:code:"):
+        return await edit(q,f"إعدادات البرنامج رقم {pid}\nالاسم الحالي: {p['name']}\nالـ ID الحالي: {p['code']}\nسعر الصرف: 1 دولار = {money_text(float(p['exchange_rate'] or 50))} جنيه مصري\n\nاختر ما تريد تغييره:",kb)
+    if d.startswith("pe:name:") or d.startswith("pe:code:") or d.startswith("pe:rate:"):
         _, _, pid = d.split(":")
-        pid=int(pid); field="name" if d.startswith("pe:name:") else "code"
-        ctx.user_data["step"]="editprogram_name" if field=="name" else "editprogram_code"
+        pid=int(pid); field="name" if d.startswith("pe:name:") else ("code" if d.startswith("pe:code:") else "rate")
+        ctx.user_data["step"]="editprogram_name" if field=="name" else ("editprogram_code" if field=="code" else "editprogram_rate")
         ctx.user_data["pid"]=pid
-        prompt="الاسم الجديد" if field=="name" else "الـ ID الجديد"
-        return await edit(q,f"أرسل {prompt} للبرنامج رقم {pid}.",InlineKeyboardMarkup([
+        prompt="الاسم الجديد" if field=="name" else ("الـ ID الجديد" if field=="code" else "سعر الصرف الجديد بالجنيه لكل دولار")
+        return await edit(q,f"أرسل {prompt} للبرنامج رقم {pid}." + ("\nمثال: 50 أو 50.25" if field=="rate" else ""),InlineKeyboardMarkup([
             [InlineKeyboardButton("رجوع لإعدادات البرنامج",callback_data=f"pe:{pid}")],
             [InlineKeyboardButton("رجوع لإدارة البرامج",callback_data="a:programs")],
             [InlineKeyboardButton("إلغاء",callback_data="a:home")]
@@ -479,8 +494,7 @@ async def messages(u,ctx):
                     return await m.reply_text("الطلب غير موجود أو تم إرسال إثباته بالفعل.")
                 c.execute("INSERT OR REPLACE INTO payout_drafts(request_id,admin_id,photo,created_at) VALUES(?,?,?,?)",(rid,user.id,m.photo[-1].file_id,now()))
                 c.execute("DELETE FROM payout_prompts WHERE admin_id=? AND prompt_message_id=?",(user.id,m.reply_to_message.message_id))
-            egp=float(r["amount"] or 0)*50; egp_text=f"{egp:,.2f}".rstrip("0").rstrip(".")
-            rate=get_exchange_rate()
+            rate=float(r["exchange_rate"]) if r["exchange_rate"] else get_program_rate(r["program_id"])
             egp=float(r["amount"] or 0)*rate; egp_text=money_text(egp)
             caption=(f"معاينة إثبات التحويل — الطلب #{rid}\nالمبلغ الذي سيظهر للمستخدم: {egp_text} جنيه مصري (سعر الصرف: {money_text(rate)} جنيه/دولار)\n\nراجع الصورة والمبلغ. لن يصل شيء للمستخدم إلا بعد الضغط على «إرسال للمستخدم».")
             return await m.reply_photo(m.photo[-1].file_id,caption=caption,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إرسال للمستخدم",callback_data=f"payout_send:{rid}"),InlineKeyboardButton("إلغاء",callback_data=f"payout_cancel:{rid}")]]))
@@ -518,6 +532,26 @@ async def messages(u,ctx):
             [InlineKeyboardButton("تغيير سعر الصرف",callback_data="a:rate")],
             [InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]
         ]))
+    if step=="editprogram_rate":
+        if not is_admin(user.id):
+            ctx.user_data.clear()
+            return await m.reply_text("غير مصرح.")
+        raw=(m.text or "").strip()
+        import re
+        if not re.fullmatch(r"\d{1,6}(?:\.\d{1,4})?",raw):
+            return await m.reply_text("سعر الصرف غير صحيح. أرسل رقمًا موجبًا بحد أقصى 4 منازل عشرية، مثل 50 أو 50.25.")
+        from decimal import Decimal, InvalidOperation
+        try: rate=Decimal(raw)
+        except InvalidOperation: rate=Decimal("0")
+        if rate<=0 or rate>Decimal("100000"):
+            return await m.reply_text("سعر الصرف يجب أن يكون أكبر من صفر ولا يتجاوز 100000 جنيه للدولار.")
+        pid=ctx.user_data.get("pid")
+        if not pid: ctx.user_data.clear(); return await m.reply_text("انتهت جلسة التعديل. افتح إدارة البرامج وحاول مرة أخرى.",reply_markup=admin_kb())
+        normalized=format(rate,"f")
+        with db() as c: c.execute("UPDATE programs SET exchange_rate=? WHERE id=?",(normalized,pid))
+        ctx.user_data.clear()
+        audit(user.id,"program_exchange_rate_updated",f"{pid}: {normalized}")
+        return await m.reply_text(f"تم تحديث سعر الصرف للبرنامج رقم {pid}. السعر الجديد: 1 دولار = {money_text(float(rate))} جنيه مصري.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إعدادات البرنامج",callback_data=f"pe:{pid}")],[InlineKeyboardButton("إدارة البرامج",callback_data="a:programs")],[InlineKeyboardButton("القائمة الرئيسية",callback_data="a:home")]]))
     if step in ("editprogram_code","editprogram_name"):
         if not is_admin(user.id): return
         value=(m.text or "").strip()
@@ -566,7 +600,7 @@ async def messages(u,ctx):
         d=ctx.user_data["draft"]
         with db() as c:
             dup=c.execute("SELECT id FROM requests WHERE wallet=? AND amount=? AND created_at>=? ORDER BY id DESC LIMIT 1",(d["wallet"],d["amount"],datetime.now(timezone.utc).replace(hour=0,minute=0,second=0).isoformat())).fetchone()
-            cur=c.execute("INSERT INTO requests(user_id,username,full_name,program_id,program_name,program_code,wallet,customer_id,amount,photo,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?)",(user.id,user.username or "",user.full_name,d["pid"],d["name"],d["code"],d["wallet"],d["customer_id"],d["amount"],d["photo"],now())); rid=cur.lastrowid
+            cur=c.execute("INSERT INTO requests(user_id,username,full_name,program_id,program_name,program_code,wallet,customer_id,amount,photo,status,created_at,exchange_rate) VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?,?)",(user.id,user.username or "",user.full_name,d["pid"],d["name"],d["code"],d["wallet"],d["customer_id"],d["amount"],d["photo"],now(),str(d.get("exchange_rate",50)))); rid=cur.lastrowid
         ctx.user_data.clear(); audit(user.id,"request_submitted",str(rid))
         await m.reply_text(f"تم إرسال البيانات بنجاح.\nرقم الطلب: #{rid}\nالحالة: قيد المراجعة\nستصلك رسالة بعد مراجعة الإدارة. احتفظ برقم الطلب للمتابعة.")
         for aid in admins():
