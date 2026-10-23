@@ -185,7 +185,7 @@ async def decide(q,ctx,rid,status,reason=""):
         try: await ctx.bot.send_message(r["user_id"],f"تم تأكيد وصول الدولارات الخاصة بطلبك رقم #{rid}. طلبك الآن في مرحلة تحويل المبلغ بالجنيه المصري، وسيصلك إثبات التحويل بعد إتمام الدفع.")
         except Exception: pass
         return
-    msg=f"تم رفض طلبك رقم #{rid}. السبب: {reason}"
+    msg=f"تم رفض طلبك رقم #{rid}. السبب: {reason}\n\nللاستفسار، تواصل مع خدمة العملاء: 01286591021"
     try: await ctx.bot.send_message(r["user_id"],msg)
     except Exception: pass
     await edit(q,f"تم رفض الطلب #{rid} وإبلاغ المستخدم.",admin_kb())
@@ -238,7 +238,7 @@ async def callbacks(u,ctx):
         caption=(f"✅ تم دفع المبلغ المستحق وقدره: {egp_text} جنيه مصري.\n\n"
                  "📎 مرفق لحضرتك إثبات التحويل.\n\n"
                  "كان معكم الإمبراطور للسحب والشحن.\n"
-                 "لو في أي مشكلة أو استفسار، يُرجى التواصل مع الدعم.")
+                 "لأي مشكلة أو استفسار، تواصل مع خدمة العملاء: 01286591021.")
         try: await ctx.bot.send_photo(r["user_id"],photo_id,caption=caption)
         except Exception as e:
             log.exception("Could not send payout proof to user for request %s: %s",rid,e)
@@ -408,7 +408,7 @@ async def messages(u,ctx):
         if not r or r["status"]!="pending": return await m.reply_text("الطلب غير موجود أو تم اتخاذ قرار بشأنه.")
         with db() as c: c.execute("UPDATE requests SET status='rejected',reviewed_at=?,reviewer_id=?,reason=? WHERE id=? AND status='pending'",(now(),user.id,(m.text or "بدون سبب")[:500],rid))
         audit(user.id,"request_rejected",str(rid))
-        try: await ctx.bot.send_message(r["user_id"],f"تم رفض طلبك #{rid}. السبب: {m.text or 'بدون سبب'}")
+        try: await ctx.bot.send_message(r["user_id"],f"تم رفض طلبك #{rid}. السبب: {m.text or 'بدون سبب'}\n\nللاستفسار، تواصل مع خدمة العملاء: 01286591021")
         except Exception: pass
         return await m.reply_text(f"تم رفض الطلب #{rid}.",reply_markup=admin_kb())
     if step in ("editprogram_code","editprogram_name","editprogram_second"):
