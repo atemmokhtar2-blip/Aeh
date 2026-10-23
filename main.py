@@ -111,7 +111,7 @@ def home_kb(uid=None):
 def admin_kb():
     return InlineKeyboardMarkup([
     [InlineKeyboardButton("الطلبات المعلقة",callback_data="a:pending"),InlineKeyboardButton("كل الطلبات",callback_data="a:all")],
-    [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs"),InlineKeyboardButton("تغيير سعر الصرف",callback_data="a:rate")],
+    [InlineKeyboardButton("إدارة البرامج",callback_data="a:programs")],
     [InlineKeyboardButton("الإحصائيات",callback_data="a:stats")],
     [InlineKeyboardButton("المستخدمون",callback_data="a:users"),InlineKeyboardButton("المشرفون",callback_data="a:admins")],
     [InlineKeyboardButton("تصدير CSV",callback_data="a:export"),InlineKeyboardButton("سجل النشاط",callback_data="a:log")]])
@@ -281,7 +281,7 @@ async def callbacks(u,ctx):
             cur=c.execute("UPDATE requests SET payout_sent_at='SENDING' WHERE id=? AND status='approved' AND payout_sent_at IS NULL",(rid,))
             if cur.rowcount!=1: return await edit(q,"تم بدء إرسال إثبات هذا الطلب بالفعل أو تم إرساله.")
             photo_id=draft["photo"]
-        usd=float(r["amount"] or 0); rate=get_exchange_rate(); egp=usd*rate; egp_text=money_text(egp)
+        usd=float(r["amount"] or 0); rate=float(r["exchange_rate"]) if r["exchange_rate"] else get_program_rate(r["program_id"]); egp=usd*rate; egp_text=money_text(egp)
         caption=(f"✅ تم دفع المبلغ المستحق وقدره: {egp_text} جنيه مصري.\n\n"
                  "📎 مرفق لحضرتك إثبات التحويل.\n\n"
                  "كان معكم الإمبراطور للسحب والشحن.\n"
