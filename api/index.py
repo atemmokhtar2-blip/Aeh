@@ -39,6 +39,25 @@ async def lifespan(_: FastAPI):
     telegram_app.add_error_handler(bot.error_handler)
     await telegram_app.initialize()
     await telegram_app.start()
+
+    # Register the Telegram webhook automatically on cold start so deployment
+    # does not depend on a manual setWebhook call. Prefer Vercel's stable
+    # production domain over a per-deployment URL.
+    public_host = (os.getenv("VERCEL_PROJECT_PRODUCTION_URL", "").strip()
+                   or os.getenv("VERCEL_URL", "").strip())
+    if not public_host:
+        raise RuntimeError("Vercel did not provide VERCEL_PROJECT_PRODUCTION_URL or VERCEL_URL.")
+    if not WEBHOOK_SECRET:
+        raise RuntimeError("TELEGRAM_WEBHOOK_SECRET must be configured before registering the webhook.")
+    public_host = public_host.removeprefix("https://").removeprefix("http://").rstrip("/")
+    webhook_url = f"https://{public_host}/{WEBHOOK_PATH}"
+    await telegram_app.bot.set_webhook(
+        url=webhook_url,
+        secret_token=WEBHOOK_SECRET,
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=False,
+    )
+    log.info("Telegram webhook registered: %s", webhook_url)
     yield
     await telegram_app.stop()
     await telegram_app.shutdown()
