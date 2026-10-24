@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import main
 
@@ -73,10 +73,43 @@ class DatabaseTests(unittest.TestCase):
 
     def test_activity_log_persists(self):
         main.audit(123456, "test_action", "unit test")
-        with main.db() as conn:
-            row = conn.execute("SELECT action,details FROM activity ORDER BY id DESC LIMIT 1").fetchone()
+        with main.db() as c:
+            row = c.execute("SELECT action,details FROM activity ORDER BY id DESC LIMIT 1").fetchone()
         self.assertEqual(row["action"], "test_action")
         self.assertEqual(row["details"], "unit test")
+
+    def test_postgres_schema_initialization_takes_lock_before_ddl(self):
+        calls = []
+
+        class Cursor:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, sql, params=()):
+                calls.append(("execute", sql, params))
+                return Cursor((0,) if "COUNT(*) FROM admins" in sql else None)
+
+            def executescript(self, script):
+                calls.append(("executescript", script))
+
+        with patch.object(main, "db", return_value=FakeConnection()), \
+             patch.object(main, "INITIAL_ADMINS", set()), \
+             patch.object(main, "OWNER", None):
+            main._init_postgres_db()
+
+        self.assertEqual(calls[0][0], "execute")
+        self.assertIn("pg_advisory_xact_lock", calls[0][1])
+        self.assertEqual(calls[1][0], "executescript")
 
 
     def test_home_menu_has_full_width_emperor_platform_url_button(self):

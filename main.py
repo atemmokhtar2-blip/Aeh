@@ -88,6 +88,8 @@ def db():
 
 def _init_postgres_db():
     with db() as c:
+        # Serialize schema initialization across concurrent serverless cold starts.
+        c.execute("SELECT pg_advisory_xact_lock(?)", (718423901,))
         c.executescript("""
         CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1,exchange_rate TEXT NOT NULL DEFAULT '50');
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
