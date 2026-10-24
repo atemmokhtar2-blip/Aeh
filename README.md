@@ -41,9 +41,7 @@ This repository exposes a FastAPI webhook at `/telegram` (or the path configured
 - `TELEGRAM_WEBHOOK_PATH`: optional private-looking path segment; defaults to `telegram`.
 - `DATABASE_URL`: **not yet used by this SQLite-based version**. The current database layer still requires a persistent writable SQLite path and is not suitable for Vercel's ephemeral filesystem.
 
-After deployment, set Telegram's webhook URL to `https://YOUR-VERCEL-DOMAIN/telegram`
-and set Telegram's `secret_token` to the same value as `TELEGRAM_WEBHOOK_SECRET`.
-The endpoint checks Telegram's `X-Telegram-Bot-Api-Secret-Token` header.
+On Vercel startup, the app automatically registers Telegram's webhook at the stable production domain (`VERCEL_PROJECT_PRODUCTION_URL`, falling back to `VERCEL_URL`) and the configured path. It uses `TELEGRAM_WEBHOOK_SECRET` as Telegram's `secret_token`; the endpoint checks Telegram's `X-Telegram-Bot-Api-Secret-Token` header. No separate manual `setWebhook` command is required. Ensure all required environment variables are configured for Production, then redeploy.
 
 
 
