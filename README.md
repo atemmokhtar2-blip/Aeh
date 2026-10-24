@@ -48,3 +48,10 @@ The endpoint checks Telegram's `X-Telegram-Bot-Api-Secret-Token` header.
 **Important limitation:** webhook delivery is added here, but Neon/PostgreSQL support and durable
 cross-instance conversation state are not implemented by this change. Do not treat this deployment
 as production-ready until the database layer is migrated and state persistence is added.
+
+
+## Neon PostgreSQL
+
+Set `DATABASE_URL` in Vercel to the Neon PostgreSQL connection string (prefer Neon's pooled connection string for serverless). When `DATABASE_URL` is present, the bot creates and uses its PostgreSQL tables; otherwise it continues to use SQLite locally. Also configure `BOT_TOKEN`, `ADMIN_IDS`, `OWNER_ID`, and `TELEGRAM_WEBHOOK_SECRET`. Keep all secrets in Vercel Environment Variables, never in Git.
+
+Existing SQLite records are not automatically copied to Neon; migrate/import them before switching production traffic. The current multi-step conversation drafts stored in Telegram `context.user_data` remain in process memory, so this database change persists business records but does not yet guarantee drafts survive across serverless invocations. A live Neon connection and Vercel deployment were not testable from this repository update alone.
