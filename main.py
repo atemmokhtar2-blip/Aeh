@@ -1,4 +1,4 @@
-import csv, io, logging, os, sqlite3
+import csv, io, logging, os, sqlite3, re
 from datetime import datetime, timezone
 from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update, ForceReply
@@ -12,6 +12,8 @@ INITIAL_ADMINS = set(ADMIN_ID_ORDER)
 OWNER_RAW = os.getenv("OWNER_ID", "").strip()
 OWNER = int(OWNER_RAW) if OWNER_RAW.isdigit() else (ADMIN_ID_ORDER[0] if ADMIN_ID_ORDER else None)
 DB_PATH = os.getenv("DB_PATH", "aeh.sqlite3")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+_USE_POSTGRES = bool(DATABASE_URL)
 WELCOME_PHOTO_PATH = Path(__file__).resolve().parent / "assets" / "welcome.jpg"
 LABELS = {"pending": "قيد المراجعة", "approved": "مقبول", "rejected": "مرفوض"}
 
@@ -24,12 +26,88 @@ def csv_safe(value):
         return "'" + value
     return value
 
+class _HybridRow(dict):
+    def __init__(self, names, values):
+        super().__init__(zip(names, values)); self._values = tuple(values)
+    def __getitem__(self, key):
+        return self._values[key] if isinstance(key, int) else super().__getitem__(key)
+
+class _PgCursor:
+    def __init__(self, cursor, names=None, lastrowid=None): self._cursor, self._names, self.lastrowid = cursor, names or [], lastrowid
+    def _row(self, row):
+        if row is None: return None
+        if isinstance(row, dict):
+            names = self._names or list(row.keys())
+            return _HybridRow(names, [row[k] for k in names])
+        return row
+    def fetchone(self): return self._row(self._cursor.fetchone())
+    def fetchall(self): return [self._row(r) for r in self._cursor.fetchall()]
+    def __iter__(self):
+        for row in self._cursor: yield self._row(row)
+    @property
+    def rowcount(self): return self._cursor.rowcount
+
+class _PgConnection:
+    def __init__(self, raw): self.raw = raw
+    def __enter__(self): self.raw.__enter__(); return self
+    def __exit__(self, typ, val, tb): return self.raw.__exit__(typ, val, tb)
+    def executescript(self, script):
+        for statement in script.split(";"):
+            if statement.strip(): self.execute(statement)
+    def execute(self, sql, params=()):
+        sql = sql.strip()
+        match = re.match(r"PRAGMA\s+table_info\(([^)]+)\)", sql, re.I)
+        if match:
+            cur = self.raw.execute("SELECT column_name AS name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s ORDER BY ordinal_position", (match.group(1).strip(),))
+            return _PgCursor(cur, ["name"])
+        ignored = bool(re.search(r"INSERT\s+OR\s+IGNORE\s+INTO", sql, re.I))
+        replacing = bool(re.search(r"INSERT\s+OR\s+REPLACE\s+INTO", sql, re.I))
+        sql = re.sub(r"INSERT\s+OR\s+(?:IGNORE|REPLACE)\s+INTO", "INSERT INTO", sql, flags=re.I).replace("?", "%s")
+        if ignored: sql += " ON CONFLICT DO NOTHING"
+        if replacing and "payout_prompts" in sql.lower(): sql += " ON CONFLICT (admin_id,prompt_message_id) DO UPDATE SET request_id=EXCLUDED.request_id,created_at=EXCLUDED.created_at"
+        if replacing and "payout_drafts" in sql.lower(): sql += " ON CONFLICT (request_id,admin_id) DO UPDATE SET photo=EXCLUDED.photo,created_at=EXCLUDED.created_at"
+        wants_id = bool(re.search(r"INSERT\s+INTO\s+requests\s*\(", sql, re.I))
+        if wants_id and "RETURNING" not in sql.upper(): sql += " RETURNING id"
+        cur = self.raw.execute(sql, params)
+        names = [d.name for d in cur.description] if cur.description else []
+        lastrowid = None
+        if wants_id and cur.description:
+            row = cur.fetchone()
+            if row: lastrowid = row.get("id") if isinstance(row, dict) else row[0]
+            cur = self.raw.execute("SELECT %s::bigint AS id", (lastrowid,)); names = ["id"]
+        return _PgCursor(cur, names, lastrowid)
+
 def db():
+    if _USE_POSTGRES:
+        import psycopg
+        from psycopg.rows import dict_row
+        return _PgConnection(psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10))
     p = Path(DB_PATH)
     if str(p.parent) not in ("", "."): p.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(DB_PATH, timeout=20)
-    c.row_factory = sqlite3.Row
-    return c
+    c = sqlite3.connect(DB_PATH, timeout=20); c.row_factory = sqlite3.Row; return c
+
+def _init_postgres_db():
+    with db() as c:
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1,exchange_rate TEXT NOT NULL DEFAULT '50');
+        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS requests(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,username TEXT,full_name TEXT,program_id INTEGER,program_name TEXT,program_code TEXT,wallet TEXT,customer_id TEXT,amount TEXT,photo TEXT,payout_photo TEXT,payout_sent_at TEXT,status TEXT DEFAULT 'pending',created_at TEXT,reviewed_at TEXT,reviewer_id BIGINT,reason TEXT,exchange_rate TEXT);
+        CREATE TABLE IF NOT EXISTS payout_prompts(admin_id BIGINT NOT NULL,prompt_message_id BIGINT NOT NULL,request_id BIGINT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(admin_id,prompt_message_id));
+        CREATE TABLE IF NOT EXISTS payout_drafts(request_id BIGINT NOT NULL,admin_id BIGINT NOT NULL,photo TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(request_id,admin_id));
+        CREATE INDEX IF NOT EXISTS request_status_idx ON requests(status);
+        CREATE TABLE IF NOT EXISTS admins(user_id BIGINT PRIMARY KEY,added_by BIGINT,added_at TEXT);
+        CREATE TABLE IF NOT EXISTS user_blocks(user_id BIGINT PRIMARY KEY,blocked_by BIGINT NOT NULL,blocked_at TEXT NOT NULL,reason TEXT DEFAULT '');
+        CREATE TABLE IF NOT EXISTS bot_users(user_id BIGINT PRIMARY KEY,username TEXT,full_name TEXT,first_seen TEXT NOT NULL,last_seen TEXT NOT NULL,welcome_photo_sent INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS activity(id BIGSERIAL PRIMARY KEY,actor BIGINT,action TEXT,details TEXT,created_at TEXT);
+        """)
+        for table,column,definition in [("requests","customer_id","TEXT"),("requests","payout_photo","TEXT"),("requests","payout_sent_at","TEXT"),("requests","exchange_rate","TEXT"),("programs","exchange_rate","TEXT NOT NULL DEFAULT '50'"),("bot_users","welcome_photo_sent","INTEGER NOT NULL DEFAULT 0")]:
+            exists=c.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? AND column_name=?",(table,column)).fetchone()
+            if not exists: c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        for i in range(1,11): c.execute("INSERT INTO programs(id,name,code,enabled,exchange_rate) VALUES(?,?,?,1,'50') ON CONFLICT DO NOTHING",(i,f"برنامج {i:02d}","لم يحدد الكود بعد"))
+        c.execute("INSERT INTO settings(key,value) VALUES('exchange_rate','50') ON CONFLICT DO NOTHING")
+        if c.execute("SELECT COUNT(*) FROM admins").fetchone()[0] == 0:
+            for aid in INITIAL_ADMINS: c.execute("INSERT INTO admins VALUES(?,?,?) ON CONFLICT DO NOTHING",(aid,aid,now()))
+        if OWNER is not None: c.execute("INSERT INTO admins VALUES(?,?,?) ON CONFLICT DO NOTHING",(OWNER,OWNER,now()))
 
 def _init_sqlite_db():
     with db() as c:
@@ -74,9 +152,10 @@ def _init_sqlite_db():
             c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(OWNER,OWNER,now()))
 
 def init_db():
-    if _USE_POSTGRES:
-        return _init_postgres_db()
+    if _USE_POSTGRES: return _init_postgres_db()
     return _init_sqlite_db()
+
+e_db()
 
 def admins():
     with db() as c: return [r[0] for r in c.execute("SELECT user_id FROM admins")]
