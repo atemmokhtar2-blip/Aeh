@@ -155,8 +155,6 @@ def init_db():
     if _USE_POSTGRES: return _init_postgres_db()
     return _init_sqlite_db()
 
-e_db()
-
 def admins():
     with db() as c: return [r[0] for r in c.execute("SELECT user_id FROM admins")]
 def is_admin(uid): return uid in admins()
