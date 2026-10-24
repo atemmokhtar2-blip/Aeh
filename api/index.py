@@ -19,9 +19,49 @@ if not WEBHOOK_PATH:
 
 telegram_app = None
 
+async def notify_admins_activated(deployment_id: str):
+    """Notify each admin once per Vercel deployment after webhook registration."""
+    if telegram_app is None:
+        return
+    try:
+        admin_ids = bot.admins()
+    except Exception:
+        log.exception("Could not load admins for activation notice")
+        return
+    for admin_id in admin_ids:
+        key = f"vercel_activation_notice:{deployment_id}:{admin_id}"
+        try:
+            with bot.db() as c:
+                claim = c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (key, "sending"))
+        except Exception:
+            log.exception("Could not claim activation notice for admin %s", admin_id)
+            continue
+        if claim.rowcount != 1:
+            continue
+        try:
+            await telegram_app.bot.send_message(chat_id=admin_id, text="تم تفعيل البوت بنجاح.")
+        except Exception:
+            log.exception("Could not send activation notice to admin %s", admin_id)
+            try:
+                with bot.db() as c:
+                    c.execute("DELETE FROM settings WHERE key=?", (key,))
+            except Exception:
+                log.exception("Could not release activation notice claim for admin %s", admin_id)
+        else:
+            try:
+                with bot.db() as c:
+                    c.execute("UPDATE settings SET value='sent' WHERE key=?", (key,))
+            except Exception:
+                log.exception("Could not mark activation notice sent for admin %s", admin_id)
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global telegram_app
+    vercel_env = os.getenv("VERCEL_ENV", "").strip().lower()
+    if os.getenv("VERCEL") == "1" and vercel_env and vercel_env != "production":
+        log.info("Skipping Telegram webhook registration for Vercel %s deployment.", vercel_env)
+        yield
+        return
     if not bot.TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is required.")
     if not bot.INITIAL_ADMINS:
@@ -58,6 +98,8 @@ async def lifespan(_: FastAPI):
         drop_pending_updates=False,
     )
     log.info("Telegram webhook registered: %s", webhook_url)
+    deployment_id = os.getenv("VERCEL_DEPLOYMENT_ID", "").strip() or public_host
+    await notify_admins_activated(deployment_id)
     yield
     await telegram_app.stop()
     await telegram_app.shutdown()

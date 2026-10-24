@@ -39,15 +39,17 @@ This repository exposes a FastAPI webhook at `/telegram` (or the path configured
 - `OWNER_ID`: owner's numeric Telegram ID, also included in `ADMIN_IDS`.
 - `TELEGRAM_WEBHOOK_SECRET`: a long random secret used to validate Telegram's webhook header.
 - `TELEGRAM_WEBHOOK_PATH`: optional private-looking path segment; defaults to `telegram`.
-- `DATABASE_URL`: **not yet used by this SQLite-based version**. The current database layer still requires a persistent writable SQLite path and is not suitable for Vercel's ephemeral filesystem.
+- `DATABASE_URL`: a persistent Neon PostgreSQL connection string; Vercel's temporary filesystem is not suitable for bot data.
 
-On Vercel startup, the app automatically registers Telegram's webhook at the stable production domain (`VERCEL_PROJECT_PRODUCTION_URL`, falling back to `VERCEL_URL`) and the configured path. It uses `TELEGRAM_WEBHOOK_SECRET` as Telegram's `secret_token`; the endpoint checks Telegram's `X-Telegram-Bot-Api-Secret-Token` header. No separate manual `setWebhook` command is required. Ensure all required environment variables are configured for Production, then redeploy.
+Enable Vercel System Environment Variables. After the first Production deployment, open the Production URL once to initialize the FastAPI app; its lifespan registers Telegram's webhook at the stable production domain (`VERCEL_PROJECT_PRODUCTION_URL`, falling back to `VERCEL_URL`) and the configured path. Telegram's `secret_token` is `TELEGRAM_WEBHOOK_SECRET`, and the endpoint validates the `X-Telegram-Bot-Api-Secret-Token` header. Vercel Preview deployments do not register or replace the Production webhook.
+
+After webhook registration, the app sends each admin a one-time-per-deployment message: `تم تفعيل البوت بنجاح.` Admins must have opened the bot at least once so Telegram allows the bot to message them. Check Telegram's `getWebhookInfo` if the bot does not respond; a non-empty webhook URL and no recent delivery error are required.
 
 
 
 
 ## Neon PostgreSQL
 
-Set `DATABASE_URL` in Vercel to the Neon PostgreSQL connection string (prefer Neon's pooled connection string for serverless). When `DATABASE_URL` is present, the bot creates and uses its PostgreSQL tables; otherwise it continues to use SQLite locally. Also configure `BOT_TOKEN`, `ADMIN_IDS`, `OWNER_ID`, and `TELEGRAM_WEBHOOK_SECRET`. Keep all secrets in Vercel Environment Variables, never in Git.
+Set `DATABASE_URL` in Vercel to the Neon PostgreSQL connection string (prefer Neon's pooled connection string for serverless). When `DATABASE_URL` is present, the bot creates and uses its PostgreSQL tables; otherwise it continues to use SQLite locally. Also configure `BOT_TOKEN`, `ADMIN_IDS`, `OWNER_ID`, and `TELEGRAM_WEBHOOK_SECRET` for Production. Keep all secrets in Vercel Environment Variables, never in Git.
 
 Existing SQLite records are not automatically copied to Neon; migrate/import them before switching production traffic. The current multi-step conversation drafts stored in Telegram `context.user_data` remain in process memory, so this database change persists business records but does not yet guarantee drafts survive across serverless invocations. A live Neon connection and Vercel deployment were not testable from this repository update alone.
