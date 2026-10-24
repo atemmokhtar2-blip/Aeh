@@ -31,7 +31,7 @@ def db():
     c.row_factory = sqlite3.Row
     return c
 
-def init_db():
+def _init_sqlite_db():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY CHECK(id BETWEEN 1 AND 10),name TEXT NOT NULL,code TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 1,exchange_rate TEXT NOT NULL DEFAULT '50');
@@ -72,6 +72,11 @@ def init_db():
                 c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(aid,aid,now()))
         if OWNER is not None:
             c.execute("INSERT OR IGNORE INTO admins VALUES(?,?,?)",(OWNER,OWNER,now()))
+
+def init_db():
+    if _USE_POSTGRES:
+        return _init_postgres_db()
+    return _init_sqlite_db()
 
 def admins():
     with db() as c: return [r[0] for r in c.execute("SELECT user_id FROM admins")]
