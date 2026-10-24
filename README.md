@@ -45,9 +45,7 @@ After deployment, set Telegram's webhook URL to `https://YOUR-VERCEL-DOMAIN/tele
 and set Telegram's `secret_token` to the same value as `TELEGRAM_WEBHOOK_SECRET`.
 The endpoint checks Telegram's `X-Telegram-Bot-Api-Secret-Token` header.
 
-**Important limitation:** webhook delivery is added here, but Neon/PostgreSQL support and durable
-cross-instance conversation state are not implemented by this change. Do not treat this deployment
-as production-ready until the database layer is migrated and state persistence is added.
+
 
 
 ## Neon PostgreSQL
