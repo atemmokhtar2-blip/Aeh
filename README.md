@@ -27,3 +27,24 @@ The amount and image are user-submitted claims, not proof that funds actually ar
 
 ## Tests
 Run `python -m unittest discover -s tests -v`.
+
+
+## Vercel webhook deployment
+
+This repository exposes a FastAPI webhook at `/telegram` (or the path configured by
+`TELEGRAM_WEBHOOK_PATH`). Configure these Vercel environment variables before deploying:
+
+- `BOT_TOKEN`: Telegram bot token.
+- `ADMIN_IDS`: comma-separated numeric Telegram admin IDs.
+- `OWNER_ID`: owner's numeric Telegram ID, also included in `ADMIN_IDS`.
+- `TELEGRAM_WEBHOOK_SECRET`: a long random secret used to validate Telegram's webhook header.
+- `TELEGRAM_WEBHOOK_PATH`: optional private-looking path segment; defaults to `telegram`.
+- `DATABASE_URL`: **not yet used by this SQLite-based version**. The current database layer still requires a persistent writable SQLite path and is not suitable for Vercel's ephemeral filesystem.
+
+After deployment, set Telegram's webhook URL to `https://YOUR-VERCEL-DOMAIN/telegram`
+and set Telegram's `secret_token` to the same value as `TELEGRAM_WEBHOOK_SECRET`.
+The endpoint checks Telegram's `X-Telegram-Bot-Api-Secret-Token` header.
+
+**Important limitation:** webhook delivery is added here, but Neon/PostgreSQL support and durable
+cross-instance conversation state are not implemented by this change. Do not treat this deployment
+as production-ready until the database layer is migrated and state persistence is added.
